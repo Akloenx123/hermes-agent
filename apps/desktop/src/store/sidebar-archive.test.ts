@@ -7,6 +7,7 @@ import { $archivedSessions, listEveryArchivedSession, loadArchivedSessions } fro
 vi.mock('@/hermes', () => ({
   listAllProfileSessions: vi.fn()
 }))
+}))
 
 const row = (id: string): SessionInfo =>
   ({
