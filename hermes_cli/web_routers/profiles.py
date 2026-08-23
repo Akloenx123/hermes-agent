@@ -685,7 +685,7 @@ def _merge_profile_tree(
             session["profile"] = profile
             session["is_default_profile"] = profile == "default"
 
-        key = os.path.normcase(project.get("path") or project["id"])
+        key = os.path.normcase(os.path.normpath(project.get("path") or project["id"]))
         existing = merged.get(key)
         if existing is None:
             merged[key] = project

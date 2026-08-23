@@ -1046,11 +1046,17 @@ export function ChatSidebar({
     // Deduplicate by id — safety net for backend merge edge cases
     // (e.g. Windows path-casing differences across profiles).
     const seen = new Set<string>()
+
     const deduped = sorted.filter(project => {
-      if (seen.has(project.id)) return false
+      if (seen.has(project.id)) {
+        return false
+      }
+
       seen.add(project.id)
+
       return true
     })
+
     return orderProjectsByIds(deduped, projectOrderIds)
   }, [
     projectTree,
