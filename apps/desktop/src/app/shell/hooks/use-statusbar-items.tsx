@@ -17,6 +17,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
+import { statusBarGatewayHealth } from '@/lib/gateway-health-pill'
 import {
   Activity,
   AlertCircle,
@@ -366,6 +367,7 @@ export function useStatusbarItems({
 
   const gatewayOpen = gatewayState === 'open'
   const gatewayConnecting = gatewayState === 'connecting'
+
   const gatewayHealth = statusBarGatewayHealth({
     connectionState: gatewayState,
     copy: {
@@ -386,6 +388,7 @@ export function useStatusbarItems({
     platforms: statusSnapshot?.gateway_platforms,
     restarting: gatewayRestarting
   })
+
   const inferenceReady = gatewayOpen && inferenceStatus?.ready === true && !gatewayHealth.degraded
   const gatewayDegraded = gatewayOpen || gatewayConnecting || gatewayHealth.degraded
 

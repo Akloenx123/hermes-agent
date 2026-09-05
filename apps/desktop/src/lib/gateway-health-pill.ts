@@ -97,6 +97,7 @@ export function statusBarGatewayHealth({
   const connectionOpen = connectionState === 'open'
   const connectionConnecting = connectionState === 'connecting'
   const downNames = unhealthyPlatformNames(platforms)
+
   const messagingDown =
     messagingWasConfigured(messagingState, platforms) && (messagingRunning === false || downNames.length > 0)
 
