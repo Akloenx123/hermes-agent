@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pm import paths
-from pm.filesystem import long_root
+from pm.filesystem import long_root, native
 from pm.lock import Facts
 from pm.package import InstallError
 from pm.registry import get_package
@@ -57,4 +57,5 @@ def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, P
                 return None
             raise InstallError(name, "installed binary is missing", "run `hermes pm install`")
         binaries[name] = binary
-    return binaries["uv"], binaries["python"]
+    # Callers execute and compare these outside PM's own file calls: the ordinary spelling, not the store's.
+    return Path(native(binaries["uv"])), Path(native(binaries["python"]))
