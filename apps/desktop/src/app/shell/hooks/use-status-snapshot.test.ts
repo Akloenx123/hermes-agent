@@ -7,8 +7,8 @@ import { NotificationStack } from '@/components/notifications'
 import { getStatus } from '@/hermes'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
-import { $desktopOnboarding } from '@/store/onboarding'
 import { clearNotifications } from '@/store/notifications'
+import { $desktopOnboarding } from '@/store/onboarding'
 
 import { deferred } from '../../../test/deferred'
 
