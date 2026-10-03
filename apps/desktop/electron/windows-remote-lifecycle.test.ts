@@ -85,7 +85,7 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
     sshWith(async command => {
       scripts.push(decode(command))
 
-      return JSON.stringify({ os: 'Windows' })
+      return JSON.stringify({ os: 'Windows', arch: 'AMD64' })
     })
   )
   await assertWindowsRemoteInstallUpdateClear(
