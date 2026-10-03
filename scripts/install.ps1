@@ -330,6 +330,26 @@ function Initialize-ResolvedPaths {
     } else {
         Join-Path $resolvedHome 'hermes-agent'
     }
+    # A HermesHome equal to or inside InstallDir puts the pm tool store
+    # (<home>\tools) inside the checkout: the repository stage's
+    # occupied-directory preflight then refuses every retry after the first
+    # run populated it, and `git stash --include-untracked` would sweep the
+    # toolchain into the stash. Refuse before anything downloads (#124526)
+    # unless HERMES_RUNTIME_DIR parks the store outside the checkout.
+    $cmpHome = "$resolvedHome".TrimEnd('\', '/')
+    $cmpDir = "$resolvedDir".TrimEnd('\', '/')
+    $dirPrefix = $cmpDir + [IO.Path]::DirectorySeparatorChar
+    $storeInside = $cmpHome -eq $cmpDir -or
+        $cmpHome.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
+    if (-not $storeInside -and $env:HERMES_RUNTIME_DIR) {
+        # The override owns the store; only it decides where that lands.
+        $cmpStore = "$env:HERMES_RUNTIME_DIR".TrimEnd('\', '/')
+        $storeInside = $cmpStore -eq $cmpDir -or
+            $cmpStore.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
+    }
+    if ($storeInside) {
+        Fail "HermesHome ($resolvedHome) cannot be the install directory or live inside it ($resolvedDir): the tool store would land inside the checkout. Use a separate -HermesHome, or point HERMES_RUNTIME_DIR outside -InstallDir."
+    }
     # The param() variables live in the CALLER's scope, which is the script
     # scope only under -File. Under the documented
     # `& ([scriptblock]::Create((irm ...)))` install they live in the
