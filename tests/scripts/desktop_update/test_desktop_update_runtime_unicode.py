@@ -55,10 +55,20 @@ if __name__ == '__main__':
 PROFILE = 'Balázs Paweł Ñuñez'
 
 
-def _run_helper(script: str, home: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess:
-    return subprocess.run(['powershell', '-NoProfile', '-Command', script],
-                          env={**os.environ, 'HERMES_HOME': str(home), **env_extra},
-                          capture_output=True, text=True, timeout=120)
+def _run_helper(script: str, home: Path, env_extra: dict[str, str], out: Path) -> list[str]:
+    """Run *script*, which writes its answer lines to ``$out`` as UTF-8.
+
+    The answer goes through a file, not stdout: under code page 437 or 936 the console cannot
+    represent ``ł``, so stdout would lose the very characters under test.
+    """
+    result = subprocess.run(['powershell', '-NoProfile', '-Command', f"$out = '{out}'; " + script],
+                            env={**os.environ, 'HERMES_HOME': str(home), **env_extra},
+                            capture_output=True, timeout=120)
+    assert result.returncode == 0, (result.stdout + result.stderr).decode('utf-8', 'replace')
+    return out.read_text(encoding='utf-8-sig').splitlines()
+
+
+_WRITE = "[IO.File]::WriteAllLines($out, [string[]]@({lines}), (New-Object Text.UTF8Encoding($false)))"
 
 
 @pytest.mark.platforms('windows')
@@ -90,10 +100,8 @@ def test_runtime_command_survives_a_non_ascii_profile_path(tmp_path: Path, code_
     prefix = f"[Console]::OutputEncoding = [Text.Encoding]::GetEncoding({code_page}); "
     script = (prefix + f". '{HELPER}'; "
               f"$c = @(Get-HermesRuntimeCommand -InstallRoot '{target}'); "
-              f"$c[0]; [Console]::OutputEncoding.CodePage")
-    result = _run_helper(script, home, {'HERMES_RUNTIME_DIR': str(store)})
-    assert result.returncode == 0, result.stdout + result.stderr
-    lines = result.stdout.strip().splitlines()
+              + _WRITE.format(lines="$c[0], [Console]::OutputEncoding.CodePage"))
+    lines = _run_helper(script, home, {'HERMES_RUNTIME_DIR': str(store)}, tmp_path / 'answer.txt')
     assert lines[0] == str(python), (
         f"interpreter path was mojibaked under code page {code_page}: {lines[0]!r}")
     assert int(lines[1]) == code_page, 'the capture must restore the caller console encoding'
@@ -123,9 +131,8 @@ def test_legacy_version_identity_check_matches_a_non_ascii_install(tmp_path: Pat
     target = str(install).replace("'", "''")
     prefix = f"[Console]::OutputEncoding = [Text.Encoding]::GetEncoding({code_page}); "
     script = (prefix + f". '{HELPER}'; "
-              f"try {{ @(Get-HermesRuntimeCommand -InstallRoot '{target}') | ConvertTo-Json -Compress }} "
-              f"catch {{ exit 1 }}")
-    result = _run_helper(script, home, {})
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout)[0] == str(external), (
+              f"try {{ $c = @(Get-HermesRuntimeCommand -InstallRoot '{target}') }} catch {{ exit 1 }}; "
+              + _WRITE.format(lines="$c[0]"))
+    lines = _run_helper(script, home, {}, tmp_path / 'answer.txt')
+    assert lines[0] == str(external), (
         f"legacy identity check lost the non-ASCII path under code page {code_page}")

@@ -336,17 +336,13 @@ function Initialize-ResolvedPaths {
     # run populated it, and `git stash --include-untracked` would sweep the
     # toolchain into the stash. Refuse before anything downloads (#124526)
     # unless HERMES_RUNTIME_DIR parks the store outside the checkout.
-    $cmpHome = "$resolvedHome".TrimEnd('\', '/')
+    # The store lands in HERMES_RUNTIME_DIR when set (Get-PmStoreRoot), else under HermesHome.
+    $cmpStore = if ($env:HERMES_RUNTIME_DIR) { "$env:HERMES_RUNTIME_DIR" } else { "$resolvedHome" }
+    $cmpStore = $cmpStore.TrimEnd('\', '/')
     $cmpDir = "$resolvedDir".TrimEnd('\', '/')
     $dirPrefix = $cmpDir + [IO.Path]::DirectorySeparatorChar
-    $storeInside = $cmpHome -eq $cmpDir -or
-        $cmpHome.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
-    if (-not $storeInside -and $env:HERMES_RUNTIME_DIR) {
-        # The override owns the store; only it decides where that lands.
-        $cmpStore = "$env:HERMES_RUNTIME_DIR".TrimEnd('\', '/')
-        $storeInside = $cmpStore -eq $cmpDir -or
-            $cmpStore.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
-    }
+    $storeInside = $cmpStore -eq $cmpDir -or
+        $cmpStore.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
     if ($storeInside) {
         Fail "HermesHome ($resolvedHome) cannot be the install directory or live inside it ($resolvedDir): the tool store would land inside the checkout. Use a separate -HermesHome, or point HERMES_RUNTIME_DIR outside -InstallDir."
     }
