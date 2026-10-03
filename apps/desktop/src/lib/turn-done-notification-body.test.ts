@@ -10,6 +10,7 @@ import {
 //   Xn(n?.content || e.title || "Message complete.", 140)
 function legacyStudioBody(sessionTitle: string, assistantContent?: string): string {
   const raw = assistantContent || sessionTitle || TURN_DONE_BODY_FALLBACK
+
   return raw.length <= TURN_DONE_BODY_MAX ? raw : raw.slice(0, TURN_DONE_BODY_MAX)
 }
 

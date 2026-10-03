@@ -14,5 +14,6 @@ export function turnDoneNotificationBody(
 ): string {
   const reply = (content ?? '').trim()
   const source = reply || fallback.trim() || TURN_DONE_BODY_FALLBACK
+
   return source.length <= TURN_DONE_BODY_MAX ? source : source.slice(0, TURN_DONE_BODY_MAX)
 }
