@@ -31,8 +31,7 @@ import {
   Terminal,
   Zap
 } from '@/lib/icons'
-import { statusBarGatewayHealth } from '@/lib/gateway-health-pill'
-import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
