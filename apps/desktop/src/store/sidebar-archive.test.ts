@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { listAllProfileSessions, type SessionInfo } from '@/hermes'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $archivedSessions, listEveryArchivedSession, loadArchivedSessions } from './sidebar-archive'
 
-vi.mock('@/hermes', () => ({
-  listAllProfileSessions: vi.fn()
-}))
+const listAllProfileSessions = vi.hoisted(() => vi.fn())
+
+vi.mock('@/api/sessions', () => ({
+  listAllProfileSessions
 }))
 
 const row = (id: string): SessionInfo =>
@@ -24,14 +25,14 @@ const row = (id: string): SessionInfo =>
 
 beforeEach(() => {
   $archivedSessions.set([])
-  vi.mocked(listAllProfileSessions).mockReset()
+  listAllProfileSessions.mockReset()
 })
 
 describe('loadArchivedSessions', () => {
   it('keeps the last successful result when a refresh fails', async () => {
     const existing = { id: 'archived-1', title: 'Keep me' } as SessionInfo
     $archivedSessions.set([existing])
-    vi.mocked(listAllProfileSessions).mockRejectedValue(new Error('offline'))
+    listAllProfileSessions.mockRejectedValue(new Error('offline'))
 
     await loadArchivedSessions()
 
@@ -41,7 +42,7 @@ describe('loadArchivedSessions', () => {
 
 describe('listEveryArchivedSession', () => {
   it('paginates until the backend total is loaded', async () => {
-    vi.mocked(listAllProfileSessions)
+    listAllProfileSessions
       .mockResolvedValueOnce({ sessions: [row('a'), row('b')], total: 3, limit: 200, offset: 0 })
       .mockResolvedValueOnce({ sessions: [row('c')], total: 3, limit: 200, offset: 2 })
 
@@ -51,7 +52,7 @@ describe('listEveryArchivedSession', () => {
   })
 
   it('stops on an empty page when profiles changed during pagination', async () => {
-    vi.mocked(listAllProfileSessions)
+    listAllProfileSessions
       .mockResolvedValueOnce({ sessions: [row('a')], total: 2, limit: 200, offset: 0 })
       .mockResolvedValueOnce({ sessions: [], total: 2, limit: 200, offset: 1 })
 
