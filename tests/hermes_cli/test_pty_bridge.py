@@ -12,6 +12,7 @@ import os
 import select
 import shutil
 import signal
+import subprocess
 import sys
 import time
 
@@ -341,6 +342,74 @@ class TestPtyBridgeClose:
             time.sleep(0.05)
         os.kill(helper, signal.SIGKILL)
         pytest.fail(f"helper pid {helper} survived close() after its leader died")
+
+    @pytest.mark.live_system_guard_bypass
+    def test_close_sweeps_helpers_of_a_non_leader_child(self):
+        # The group-leadership guard (above) signals a shared-group child one PID at a
+        # time, so the group sweep cannot run: no killpg is ever safe. A helper that
+        # ignores SIGHUP must still be snapshotted before its parent dies and killed
+        # individually, or it keeps the PTY slave open forever (#76759).
+        helper = None
+
+        class _PopenBackedProc:
+            """Duck-typed ptyprocess handle around a plain Popen child that stays in
+            OUR process group (no start_new_session), exercising the non-leader branch."""
+
+            def __init__(self, popen):
+                self._popen = popen
+                self.pid = popen.pid
+                self.fd = -1
+
+            def isalive(self):
+                return self._popen.poll() is None
+
+            def kill(self, sig):
+                self._popen.send_signal(sig)
+
+            def close(self, force=False):
+                pass
+
+        # The helper subshell ignores SIGHUP itself (trap is inherited by its sleep
+        # loop), so only the sweep's SIGKILL can end it. Both it and the leader loop
+        # forever; the leader dies on the first SIGHUP close() sends it.
+        script = (
+            '/bin/sh -c \'trap "" HUP; while :; do sleep 0.05; done\' & '
+            "echo helper=$!; while :; do sleep 0.05; done"
+        )
+        popen = subprocess.Popen(["/bin/sh", "-c", script], stdout=subprocess.PIPE, text=True)
+        out = popen.stdout
+        assert out is not None
+        try:
+            line = ""
+            while "helper=" not in line:
+                line = out.readline()
+                if not line:
+                    pytest.fail("leader exited before printing its helper pid")
+            helper = int(line.split("helper=")[1].strip())
+
+            bridge = PtyBridge.__new__(PtyBridge)
+            bridge._proc = _PopenBackedProc(popen)
+            bridge._fd = -1
+            # recorded at spawn: the child was found in OUR group (pgid != pid)
+            bridge._pgid = os.getpgid(popen.pid)
+            bridge._closed = False
+
+            bridge.close()
+        finally:
+            out.close()
+            if popen.poll() is None:
+                popen.kill()
+            popen.wait()
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(helper, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(helper, signal.SIGKILL)
+        pytest.fail(f"helper pid {helper} survived close() of its non-leader parent")
 
     def test_close_lets_a_helper_finish_its_sighup_shutdown(self, tmp_path):
         # The TUI gateway saves its sessions on SIGHUP within a 1 s grace. Once the group got
