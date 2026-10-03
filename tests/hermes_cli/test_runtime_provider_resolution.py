@@ -798,12 +798,12 @@ def test_openai_env_file_key_used_as_fallback_without_openrouter_key(monkeypatch
     monkeypatch.delenv(oa_env_name, raising=False)
     monkeypatch.delenv(or_env_name, raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.load_env", lambda: {oa_env_name: "dotenv-openai-key"}
+        "hermes_cli.config.load_env", lambda: {oa_env_name: "sk-or-dotenv-openai-key"}
     )
 
     resolved = rp.resolve_runtime_provider(requested="openrouter")
 
-    assert resolved["api_key"] == "dotenv-openai-key"
+    assert resolved["api_key"] == "sk-or-dotenv-openai-key"
 
 
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
