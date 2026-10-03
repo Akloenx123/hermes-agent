@@ -798,6 +798,7 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None, caption=None)
             if media_files:
                 last_result = None
                 text = (message or "").strip()
+                warnings: list[str] = []
                 if text and not (caption and caption.strip()):
                     text_result = await _qqbot_send_text_message(client, headers, chat_id, text)
                     if isinstance(text_result, dict) and text_result.get("error"):
@@ -813,16 +814,33 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None, caption=None)
                     if not os.path.exists(media_path):
                         from urllib.parse import urlparse as _urlparse
                         if _urlparse(str(media_path)).scheme not in {"http", "https"}:
-                            logger.warning("QQBot media file not found, skipping: %s", media_path)
+                            warnings.append(f"QQBot media file not found, skipping: {media_path}")
+                            logger.warning(warnings[-1])
                             continue
                     result = await _qqbot_deliver_one_media(
                         client, headers, chat_id, media_path, bool(is_voice), caption=media_caption)
                     if isinstance(result, dict) and result.get("error"):
-                        return result
+                        # Media failure must not discard the send (main degraded to text +
+                        # omission warning): collect it and keep delivering.
+                        warnings.append(result["error"])
+                        logger.warning("QQBot media delivery failed, omitting attachment: %s",
+                                       result["error"])
+                        continue
                     last_result = result
 
                 if last_result is None:
-                    return _error("QQBot: no deliverable media attachments")
+                    # Nothing was deliverable (caption rides the media, which all failed):
+                    # degrade to the text alone, as the pre-media generic path did.
+                    fallback_text = text or (caption or "").strip()
+                    if not fallback_text:
+                        return {"error": "QQBot: no deliverable media attachments",
+                                **({"warnings": warnings} if warnings else {})}
+                    text_result = await _qqbot_send_text_message(client, headers, chat_id, fallback_text)
+                    if isinstance(text_result, dict) and text_result.get("error"):
+                        return {**text_result, **({"warnings": warnings} if warnings else {})}
+                    last_result = text_result
+                if warnings and isinstance(last_result, dict):
+                    last_result["warnings"] = [*last_result.get("warnings", []), *warnings]
                 return last_result
 
             # --- Text-only path: first 2xx wins (pre-media behavior) ---
