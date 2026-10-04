@@ -226,3 +226,26 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+
+
+def test_advertised_runtime_python_may_be_probed_but_not_read(tmp_path, monkeypatch):
+    """A PM-managed python under the guarded home (HERMES_PYTHON) is stat'ed to pick the launcher;
+    that probe is allowed, reading it or probing any sibling is still refused."""
+    from tests import home_io_guard
+    from tests.home_io_guard import HomeIOGuard
+
+    home = tmp_path / "home"
+    runtime = home / "tools" / "python" / "bin" / "python3"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("", encoding="utf-8")
+    sibling = runtime.with_name("other")
+    sibling.write_text("", encoding="utf-8")
+    guard = HomeIOGuard(lambda: [home])
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(runtime, metadata=True)
+    monkeypatch.setattr(home_io_guard, "_RUNTIME_PYTHON_STRS", frozenset({os.path.normcase(str(runtime))}))
+    guard.check(runtime, metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(runtime)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(sibling, metadata=True)
