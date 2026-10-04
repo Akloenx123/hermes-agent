@@ -34,6 +34,41 @@ def test_parse_proc_locks_keeps_only_write_locks_on_our_inodes_and_decodes_the_w
     ]
 
 
+def test_parse_proc_locks_matches_on_inode_alone_when_the_device_is_none():
+    """btrfs: stat() reports a subvolume device, /proc/locks the superblock device."""
+    inodes = {(None, 4194737): "-shm"}
+    text = "1: POSIX  ADVISORY  WRITE 594094 00:1e:4194737 120 120\n2: POSIX  ADVISORY  WRITE 1 00:1e:5 120 120\n"
+    assert parse_proc_locks(text, inodes) == [(594094, "WAL write", "-shm")]
+
+
+def test_fstype_of_picks_the_longest_matching_mount(tmp_path, monkeypatch):
+    import hermes_state_lockowners as mod
+
+    info = (
+        "20 1 0:1e / / rw - btrfs /dev/nvme0n1p2 rw\n"
+        "21 20 0:20 /home/a\\040b /home/a\\040b rw - ext4 /dev/sda1 rw\n"
+    )
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(info, encoding="utf-8")
+    monkeypatch.setattr(mod, "_MOUNTINFO", str(mountinfo))
+    assert mod._fstype_of("/home/a b/state.db") == "ext4"
+    assert mod._fstype_of("/home/x/state.db") == "btrfs"
+
+
+@pytest.mark.platforms("linux")
+def test_btrfs_device_mismatch_still_names_the_holder(tmp_path, monkeypatch):
+    import hermes_state_lockowners as mod
+
+    db = tmp_path / "state.db"
+    db.write_bytes(b"")
+    st = os.stat(db)
+    held = f"1: POSIX  ADVISORY  WRITE {os.getpid()} 00:1e:{st.st_ino} 1073741825 1073741825\n"
+    monkeypatch.setattr(mod, "_fstype_of", lambda path: "btrfs")
+    monkeypatch.setattr(mod, "open", lambda *a, **k: io.StringIO(held), raising=False)
+    lines = state_db_write_lock_holders(db)
+    assert len(lines) == 1 and f"PID {os.getpid()} " in lines[0], lines
+
+
 @pytest.mark.platforms("linux")
 def test_holder_skipped_by_one_proc_locks_pass_is_still_named(tmp_path, monkeypatch):
     """/proc/locks is served over several read()s, so churn elsewhere can skip an entry in one pass."""

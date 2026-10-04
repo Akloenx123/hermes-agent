@@ -13,7 +13,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,37 @@ def _describe_range(sidecar: str, start: int, end: int) -> str:
     return f"db bytes {start}-{end}"
 
 
-def parse_proc_locks(text: str, inodes: Dict[Tuple[int, int], str]) -> List[Tuple[int, str, str]]:
+# btrfs reports an anonymous per-subvolume device in stat() but the superblock device in
+# /proc/locks, so (st_dev, st_ino) never matches there; inodes are unique within a subvolume.
+_INODE_ONLY_FSTYPES = frozenset({"btrfs"})
+_MOUNTINFO = "/proc/self/mountinfo"
+
+
+def _fstype_of(path: str) -> str:
+    """Filesystem type of the mount containing ``path`` (``""`` if /proc/self/mountinfo is unreadable)."""
+    best, fstype = "", ""
+    try:
+        lines = Path(_MOUNTINFO).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        head, sep, tail = line.partition(" - ")
+        fields = head.split()
+        if not sep or len(fields) < 5 or not tail:
+            continue
+        mount = fields[4].replace("\\040", " ")
+        if (path == mount or path.startswith(mount.rstrip("/") + "/")) and len(mount) >= len(best):
+            best, fstype = mount, tail.split()[0]
+    return fstype
+
+
+def parse_proc_locks(text: str, inodes: Dict[Tuple[Optional[int], int], str]) -> List[Tuple[int, str, str]]:
     """``(pid, lock kind, sidecar)`` for every WRITE lock on one of ``inodes``.
 
-    ``inodes`` maps ``(st_dev, st_ino)`` to ``""`` (main file), ``"-wal"`` or ``"-shm"``. Read locks
-    are dropped: they never block a writer in WAL mode. An OFD lock is reported with pid ``-1``
-    (the kernel does not export its owner).
+    ``inodes`` maps ``(st_dev, st_ino)`` to ``""`` (main file), ``"-wal"`` or ``"-shm"``; a ``None``
+    device matches the inode on any device (filesystems whose stat() device differs from
+    ``/proc/locks``). Read locks are dropped: they never block a writer in WAL mode. An OFD lock is
+    reported with pid ``-1`` (the kernel does not export its owner).
     """
     found: List[Tuple[int, str, str]] = []
     for line in text.splitlines():
@@ -73,6 +98,8 @@ def parse_proc_locks(text: str, inodes: Dict[Tuple[int, int], str]) -> List[Tupl
             continue
         sidecar = inodes.get(key)
         if sidecar is None:
+            sidecar = inodes.get((None, key[1]))
+        if sidecar is None:
             continue
         found.append((pid, _describe_range(sidecar, start, end), sidecar))
     return found
@@ -86,13 +113,14 @@ def state_db_write_lock_holders(db_path) -> List[str]:
     if not sys.platform.startswith("linux"):
         return []
     base = os.path.realpath(os.fspath(db_path))
-    inodes: Dict[Tuple[int, int], str] = {}
+    inodes: Dict[Tuple[Optional[int], int], str] = {}
+    inode_only = _fstype_of(base) in _INODE_ONLY_FSTYPES
     for sidecar in ("", "-wal", "-shm"):
         try:
             st = os.stat(base + sidecar)
         except OSError:
             continue
-        inodes[(st.st_dev, st.st_ino)] = sidecar
+        inodes[(None if inode_only else st.st_dev, st.st_ino)] = sidecar
     # /proc/locks is host-wide and served over several read()s: lock churn in other processes
     # shifts it mid-read and can skip the holder. A skip rarely repeats, so union three passes.
     held: List[Tuple[int, str, str]] = []
