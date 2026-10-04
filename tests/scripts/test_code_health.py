@@ -14,8 +14,8 @@ _SWALLOW = "def other():\n    try:\n        pass\n    except Exception:\n       
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True,
-                          encoding="utf-8", timeout=60).stdout.strip()
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True,
+                          text=True, encoding="utf-8", timeout=60).stdout.strip()
 
 
 def _commit(repo: Path, files: dict[str, str | None]) -> str:
@@ -55,20 +55,25 @@ def test_ratchet_blocks_growth_new_and_swapped_violations(tmp_path, capsys):
     legacy_plus = _LEGACY + "    if x == 99:\n        return 99\n"
     ok = _LEGACY + "\n\n" + _SWALLOW + "\n\ndef added():\n    return 1\n"
     grown = legacy_plus + "\n\n" + _SWALLOW
-    swapped = _LEGACY + "\n\ndef other():\n    return 1\n\n\n" + _SWALLOW.replace("other", "fresh")
+    fresh = _SWALLOW.replace("pass\n", "return 2\n", 1).replace("other", "fresh")
+    swapped = _LEGACY + "\n\ndef other():\n    return 1\n\n\n" + fresh
 
     assert _verdict(repo, base, {"pkg/a.py": ok}, capsys)[0] == 0  # legacy debt never blocks
     code, out = _verdict(repo, base, {"pkg/a.py": grown}, capsys)
     assert code == 1 and "legacy" in out and "CC 23 > 22" in out
     code, out = _verdict(repo, base, {"pkg/a.py": swapped}, capsys)
     assert code == 1 and "BLE001" in out and "fresh" in out  # fixing one doesn't buy another
+    traded = {"pkg/a.py": _LEGACY, "pkg/b.py": fresh}
+    code, out = _verdict(repo, base, traded, capsys)
+    assert code == 1 and "fresh" in out  # deleting a violation never pays for an unrelated one
 
 
 def test_moved_code_keeps_its_cap(tmp_path, capsys):
     repo, base = _repo(tmp_path)
-    split: dict[str, str | None] = {"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _LEGACY}
-    code, out = _verdict(repo, base, split, capsys)
-    assert code == 0, out
+    for split in ({"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _LEGACY},
+                  {"pkg/a.py": _LEGACY, "pkg/a_swallow.py": _SWALLOW}):  # hits move with their unit
+        code, out = _verdict(repo, base, dict(split), capsys)
+        assert code == 0, out
     renamed: dict[str, str | None] = {"pkg/a.py": None, "pkg/b.py": _LEGACY + "\n\n" + _SWALLOW}
     code, out = _verdict(repo, base, renamed, capsys)
     assert code == 0, out

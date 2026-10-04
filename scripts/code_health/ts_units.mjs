@@ -113,7 +113,9 @@ function measureFile(path) {
       const qual = unique([...stack, ownName(node) ?? '<anon>'].join('.'))
       const start = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
       const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1
-      const body = node.getText(sf).replace(/\s+/g, ' ')
+      // Name-independent: parameters + body only, so a rename (or a move) keeps the cap.
+      const params = node.parameters.map(p => p.getText(sf)).join(',')
+      const body = (params + '=>' + (node.body ? node.body.getText(sf) : '')).replace(/\s+/g, ' ')
       const unit = {
         q: qual, line: start, lines: end - start + 1, cc: complexity(node), nesting: nesting(node),
         hash: createHash('sha1').update(body).digest('hex').slice(0, 16)

@@ -93,8 +93,12 @@ def main(argv: list[str] | None = None) -> int:
     with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
         results = dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
     failed = [name for name, (code, _) in results.items() if code != 0]
-    for name in failed:
-        print(f"\n=== {name} (failed) ===\n{results[name][1]}")
+    # A passing health run still carries advisories and comment-allowed findings that the
+    # reviewer must see, so its report is always shown.
+    for name, (code, output) in results.items():
+        if code != 0 or name == "health":
+            label = "failed" if code != 0 else "ok"
+            print(f"\n=== {name} ({label}) ===\n{output.rstrip()}")
     status = "FAILED: " + ", ".join(failed) if failed else "ok"
     print(f"\nscripts/check: {len(results)} checks, {status}")
     return 1 if failed else 0

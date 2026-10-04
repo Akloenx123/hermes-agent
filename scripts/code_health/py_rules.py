@@ -195,9 +195,19 @@ def import_time_capture(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                     yield from _capture_lines(default)
 
 
-def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+def _bounded_by_wait_for(tree: ast.Module) -> set[int]:
+    """ids of calls passed to ``asyncio.wait_for``/``timeout`` (already bounded by the wrapper)."""
+    bounded: set[int] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _has_kw(node, "timeout"):
+        if isinstance(node, ast.Call) and _call_name(node).rpartition(".")[2] in ("wait_for", "timeout"):
+            bounded.update(id(arg) for arg in node.args)
+    return bounded
+
+
+def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    bounded = _bounded_by_wait_for(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or _has_kw(node, "timeout") or id(node) in bounded:
             continue
         name = _call_name(node)
         head, _, leaf = name.rpartition(".")
