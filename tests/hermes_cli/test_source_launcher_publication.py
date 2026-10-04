@@ -564,7 +564,10 @@ def _torn_by_a_killed_merge(tmp_path, monkeypatch):
     from hermes_cli import _early_recovery
 
     marker = _early_recovery.interrupted_pull_marker(repo)
-    marker.write_text(f"pid=0\npre={pre}\ntarget={target}\nstash=\n", encoding="utf-8", newline="")
+    # The updater records the git it moved the tree with: a Windows install's only git is PM's
+    # store copy, which the repair cannot look up through ``pm`` (it imports hermes_constants).
+    marker.write_text(f"pid=0\npre={pre}\ntarget={target}\nstash=\ngit={shutil.which('git')}\n",
+                      encoding="utf-8", newline="")
     constants.unlink()
     (repo / ".git" / "index.lock").touch()
     select_generation(repo, "one", "repaired")
@@ -581,6 +584,9 @@ def test_a_merge_killed_writing_hermes_constants_is_repaired_by_the_next_launch(
     env.pop("HERMES_HOME", None)  # the default-home pin itself needs hermes_constants
     env.pop("HERMES_RUNTIME_DIR", None)
     env.pop("PYTEST_CURRENT_TEST", None)  # the repair stands down in a checkout pytest itself runs from
+    no_git = tmp_path / "path-without-git"
+    no_git.mkdir()
+    env["PATH"] = str(no_git)  # as on that Windows install: no git on PATH outside the updater
     if surface == "launcher":
         out = tmp_path / "commands"
         out.mkdir()

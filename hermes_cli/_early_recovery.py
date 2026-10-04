@@ -244,16 +244,20 @@ def interrupted_pull_marker(root: Path) -> Path:
     return _git_dir(root) / INTERRUPTED_PULL_MARKER
 
 
-def _git_executable() -> str:
+def _git_executable(recorded_by_updater: str = "") -> str:
     """The git ``hermes update`` runs (``_subprocess_compat.expose_pm_git``), without installing it.
 
-    PATH's git first. A Windows install whose only git is the one install.ps1 staged in PM's store
+    The absolute git the killed updater recorded in its marker first: finding PM's copy needs
+    ``pm``, which imports ``hermes_constants``, and a merge killed while writing that module (or
+    anything else ``pm`` imports) leaves only this path to the repair. Then PATH's git. A Windows install whose only git is the one install.ps1 staged in PM's store
     has none on PATH until the updater exposes it, so this falls back to that copy: PM's recorded
     entry, or the lockfile's pinned entry the installer extracted without recording it. A bare
     ``git`` there dies with WinError 2 and the torn tree this repair exists for stays torn.
     """
     import shutil
 
+    if recorded_by_updater and os.path.isfile(recorded_by_updater):
+        return recorded_by_updater
     found = shutil.which("git")
     if found:
         return found
@@ -813,7 +817,7 @@ def _restore_holding_claim(root: Path, marker: Path, *, after_failure: bool = Fa
     pre, target = fields.get("pre", "").strip(), fields.get("target", "").strip()
     stash = fields.get("stash", "").strip()
 
-    executable = _git_executable()
+    executable = _git_executable(fields.get("git", "").strip())
     try:
         from hermes_cli.update_custody import run_git
     except Exception:  # noqa: BLE001 - torn tree: plain spawns (see _checkout_custody)

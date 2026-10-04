@@ -452,7 +452,7 @@ def test_a_dead_index_lock_is_released_even_when_git_cannot_run(tmp_path, monkey
     lock.write_bytes(b"")
     if sys.platform == "darwin" and not shutil.which("lsof"):
         pytest.skip("no lsof: the dead lock cannot be proven dead here")
-    monkeypatch.setattr(er, "_git_executable", lambda: str(tmp_path / "no-such-git"))
+    monkeypatch.setattr(er, "_git_executable", lambda recorded="": str(tmp_path / "no-such-git"))
     assert er.restore_interrupted_pull(root) is False
     assert not lock.exists(), "a missing git stranded a dead index.lock"
 

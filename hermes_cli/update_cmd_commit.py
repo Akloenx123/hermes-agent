@@ -115,8 +115,22 @@ def arm_tree_move(git_cmd, root: Path, *, pre: str | None, target: str, stash: s
     """
     marker = interrupted_pull_marker(root)
     marker.write_text(f"pid={os.getpid()}\npre={pre or ''}\ntarget={target}\nstash={stash or ''}\n"
-                      + (f"rollback={rollback}\n" if rollback else ""), encoding="utf-8")
+                      + (f"rollback={rollback}\n" if rollback else "")
+                      + (f"git={git}\n" if (git := _absolute_git(git_cmd)) else ""), encoding="utf-8")
     return marker
+
+
+def _absolute_git(git_cmd) -> str:
+    """The git this run moves the tree with, as an absolute path for the next launch's repair.
+
+    A Windows install's git is often PM's store copy, on PATH only inside the updater
+    (``expose_pm_git``); the repair cannot look it up through ``pm`` when the killed move tore a
+    module ``pm`` imports (``hermes_constants``)."""
+    import shutil
+
+    head = (list(git_cmd) or ["git"])[0] if not isinstance(git_cmd, str) else git_cmd
+    found = shutil.which(head)
+    return os.path.abspath(found) if found else ""
 
 
 def files_added_by(git_cmd, root: Path, pre: str, target: str | None) -> list[str]:
