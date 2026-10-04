@@ -1,0 +1,144 @@
+"""Python structure: functions (qualname, length, nesting, body hash) and scope lookup.
+
+Cyclomatic complexity comes from ruff (``ruff_runner``) so the number matches what
+``ruff check --select C901`` prints; everything else is measured here from the AST.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+from bisect import bisect_right
+from dataclasses import dataclass
+
+from scripts.code_health.model import MODULE_SCOPE, FileMeasure, Unit
+
+_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
+_BLOCKS = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.With, ast.AsyncWith, ast.Match)
+_TRY_STAR = getattr(ast, "TryStar", None)
+if _TRY_STAR is not None:
+    _BLOCKS = (*_BLOCKS, _TRY_STAR)
+
+
+@dataclass
+class Span:
+    start: int
+    end: int
+    qualname: str
+
+
+def _child_blocks(node: ast.AST):
+    """Statement lists directly owned by a compound statement."""
+    for name in ("body", "orelse", "finalbody"):
+        yield getattr(node, name, None) or []
+    for handler in getattr(node, "handlers", None) or []:
+        yield handler.body
+    for case in getattr(node, "cases", None) or []:
+        yield case.body
+
+
+def nesting_depth(stmts: list[ast.stmt], depth: int = 0) -> int:
+    deepest = depth
+    for stmt in stmts:
+        if isinstance(stmt, (*_FUNCS, ast.ClassDef)) or not isinstance(stmt, _BLOCKS):
+            continue
+        for index, block in enumerate(_child_blocks(stmt)):
+            # `elif` is an If alone in orelse: same visual depth as its `if`.
+            is_elif = (
+                isinstance(stmt, ast.If)
+                and index == 1
+                and len(block) == 1
+                and isinstance(block[0], ast.If)
+            )
+            deepest = max(deepest, nesting_depth(block, depth if is_elif else depth + 1))
+    return deepest
+
+
+def body_hash(node: ast.AST) -> str:
+    """Name-independent hash, so a function moved or renamed unchanged keeps its cap."""
+    dumped = ast.dump(node, annotate_fields=False)
+    name = getattr(node, "name", "")
+    dumped = dumped.replace(repr(name), "''", 1)
+    return hashlib.sha1(dumped.encode("utf-8")).hexdigest()[:16]
+
+
+class _UnitCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.stack: list[str] = []
+        self.units: dict[str, Unit] = {}
+        self.spans: list[Span] = []
+        self.seen: set[str] = set()
+        self.funcs: list[str] = []
+        self.total_lines: dict[str, int] = {}
+
+    def _qualname(self, name: str) -> str:
+        """Dotted path without ``<locals>``; a repeated name (property setter, conditional
+        def) gets ``#2``, ``#3`` in source order."""
+        base = ".".join([*self.stack, name])
+        qual, n = base, 1
+        while qual in self.seen:
+            n += 1
+            qual = f"{base}#{n}"
+        self.seen.add(qual)
+        return qual
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        qual = self._qualname(node.name)
+        self.spans.append(Span(node.lineno, node.end_lineno or node.lineno, qual))
+        self.stack.append(qual.rsplit(".", 1)[-1])
+        self.generic_visit(node)
+        self.stack.pop()
+
+    def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        qual = self._qualname(node.name)
+        end = node.end_lineno or node.lineno
+        first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        self.total_lines[qual] = end - first + 1
+        self.units[qual] = Unit(
+            qualname=qual,
+            line=node.lineno,
+            metrics={"FUNC_LINES": end - first + 1, "NESTING": nesting_depth(node.body)},
+            body_hash=body_hash(node),
+            parent=self.funcs[-1] if self.funcs else None,
+        )
+        self.spans.append(Span(node.lineno, end, qual))
+        self.stack.append(qual.rsplit(".", 1)[-1])
+        self.funcs.append(qual)
+        self.generic_visit(node)
+        self.funcs.pop()
+        self.stack.pop()
+
+    visit_FunctionDef = _visit_func
+    visit_AsyncFunctionDef = _visit_func
+
+
+class ScopeIndex:
+    """Innermost enclosing def/class qualname for a line."""
+
+    def __init__(self, spans: list[Span]) -> None:
+        self.spans = sorted(spans, key=lambda s: (s.start, -s.end))
+        self.starts = [s.start for s in self.spans]
+
+    def scope(self, line: int) -> str:
+        best = MODULE_SCOPE
+        best_size = None
+        for span in self.spans[: bisect_right(self.starts, line)]:
+            if span.start <= line <= span.end:
+                size = span.end - span.start
+                if best_size is None or size <= best_size:
+                    best, best_size = span.qualname, size
+        return best
+
+
+def measure_structure(fm: FileMeasure, tree: ast.Module) -> ScopeIndex:
+    collector = _UnitCollector()
+    collector.visit(tree)
+    # FUNC_LINES is a function's OWN lines: a nested def is its own unit, so editing a closure
+    # never counts against the function that encloses it.
+    for unit in collector.units.values():
+        if unit.parent is not None:
+            parent = collector.units[unit.parent]
+            parent.metrics["FUNC_LINES"] -= collector.total_lines[unit.qualname]
+    fm.units = collector.units
+    fm.metrics["FILE_LINES"] = len(fm.lines)
+    return ScopeIndex(collector.spans)

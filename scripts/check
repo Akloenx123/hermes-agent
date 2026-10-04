@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Run every blocking lint check CI runs, locally, with the same pinned tools.
+
+    python scripts/check                # everything, against the merge-base with origin/main
+    python scripts/check --only health  # just the code-health ratchet
+    python scripts/check --install-hook # run it as the git pre-commit hook
+
+CI runs the same command (``.github/workflows/lint.yml``), so a green local run means a green
+lint lane. The pre-commit hook is skippable (``git commit --no-verify``); CI is not.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from scripts.code_health import gitio  # noqa: E402
+from scripts.code_health.ruff_runner import resolve_ruff  # noqa: E402
+
+_HOOK_MARK = "# hermes-agent scripts/check pre-commit hook"
+_HOOK = f"""#!/usr/bin/env bash
+{_HOOK_MARK} (installed by `scripts/check --install-hook`; skip once with --no-verify)
+repo="$(git rev-parse --show-toplevel)"
+# Hooks are shared by every worktree; a branch that predates scripts/check commits unchecked.
+[ -f "$repo/scripts/check" ] || exit 0
+py=python3
+command -v python3 >/dev/null 2>&1 || py=python
+exec "$py" "$repo/scripts/check"
+"""
+
+# name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml.
+_GUARDS = {
+    "footguns": ["scripts/check-windows-footguns.py", "--all"],
+    "shebangs": ["scripts/check_bash_shebangs.py"],
+    "no-tmp": ["scripts/check_no_tmp_literals.py"],
+    "config-writers": ["scripts/check_config_yaml_writers.py"],
+    "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
+}
+
+
+def _run(argv: list[str]) -> tuple[int, str]:
+    proc = subprocess.run(
+        argv, cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        stdin=subprocess.DEVNULL, timeout=900, check=False,
+    )
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def _jobs(only: str | None, base: str | None) -> dict[str, list[str]]:
+    jobs = {name: [sys.executable, *argv] for name, argv in _GUARDS.items()}
+    jobs["ruff"] = [*resolve_ruff(REPO), "check", "."]
+    health = [sys.executable, "-m", "scripts.code_health"]
+    jobs["health"] = health + (["--base", base] if base else [])
+    if only:
+        return {name: argv for name, argv in jobs.items() if name in only.split(",")}
+    return jobs
+
+
+def install_hook() -> int:
+    hooks = Path(gitio.git(REPO, "rev-parse", "--path-format=absolute", "--git-path", "hooks").strip())
+    target = hooks / "pre-commit"
+    if target.exists() and _HOOK_MARK not in target.read_text(encoding="utf-8-sig", errors="replace"):
+        print(f"scripts/check: {target} exists and is not ours; add `python scripts/check` to it")
+        return 1
+    hooks.mkdir(parents=True, exist_ok=True)
+    target.write_text(_HOOK, encoding="utf-8", newline="\n")
+    os.chmod(target, 0o755)  # windows-footgun: ok — chmod +x is a no-op on Windows, harmless
+    print(f"scripts/check: pre-commit hook installed at {target}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="scripts/check", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--only", help=f"comma list of: {', '.join([*_GUARDS, 'ruff', 'health'])}")
+    parser.add_argument("--base", help="base revision for the code-health ratchet")
+    parser.add_argument("--install-hook", action="store_true")
+    args = parser.parse_args(argv)
+    if args.install_hook:
+        return install_hook()
+    try:
+        jobs = _jobs(args.only, args.base)
+    except RuntimeError as exc:
+        print(f"scripts/check: {exc}", file=sys.stderr)
+        return 2
+    with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
+        results = dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
+    failed = [name for name, (code, _) in results.items() if code != 0]
+    for name in failed:
+        print(f"\n=== {name} (failed) ===\n{results[name][1]}")
+    status = "FAILED: " + ", ".join(failed) if failed else "ok"
+    print(f"\nscripts/check: {len(results)} checks, {status}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
