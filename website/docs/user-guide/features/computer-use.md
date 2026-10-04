@@ -280,12 +280,14 @@ pack contains:
 
 | File | Topic |
 |---|---|
+| `README.md` | Overview of the pack and driver install steps |
 | `SKILL.md` | The cross-platform core (snapshot invariant, no-foreground contract, click dispatch, AX-tree mechanics) |
 | `MACOS.md` | macOS specifics: no-foreground contract, AXMenuBar navigation, SkyLight click dispatch, Apple Events JS bridge |
 | `WINDOWS.md` | Windows specifics: UIA tree, UWP / `ApplicationFrameHost` hosting, Session 0 isolation, autostart pattern |
 | `LINUX.md` | Linux specifics: AT-SPI tree, X11 / Wayland, terminal-emulator detection |
 | `RECORDING.md` | Trajectory + video recording semantics |
 | `BROWSER.md` | Browser-page interaction tips |
+| `EMBEDDING.md` | Embedding the driver in a macOS app without extra permission prompts |
 
 These are **platform deep dives, not duplicates of the Hermes skill** —
 when an agent reports "on Windows, my click landed on the wrong

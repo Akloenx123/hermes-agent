@@ -355,6 +355,7 @@ cua-driver skills install
 links the pack into `~/.hermes/skills/cua-driver` (Hermes is a detected
 agent; `cua-driver skills status` shows the link state). You'll then have:
 
+- `README.md` — overview of the pack and driver install steps
 - `SKILL.md` — the cross-platform core (snapshot invariant, no-
   foreground contract, click dispatch, AX tree mechanics)
 - `MACOS.md` — macOS specifics (no-foreground contract, AXMenuBar
@@ -365,6 +366,8 @@ agent; `cua-driver skills status` shows the link state). You'll then have:
   emulator detection)
 - `RECORDING.md` — trajectory + video recording semantics
 - `BROWSER.md` — browser page interaction tips
+- `EMBEDDING.md` — embedding the driver in a macOS app without extra
+  permission prompts
 
 Those files describe the driver's OWN MCP tools (`get_window_state`,
 `element_token`, `snapshot_id`, …). Read them for platform context; keep
