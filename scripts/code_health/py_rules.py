@@ -86,15 +86,34 @@ def _env_read_name(node: ast.AST) -> str | None:
     return None
 
 
-def _walk_skipping(node: ast.AST, skip: tuple[type, ...]) -> Iterator[ast.AST]:
-    """``ast.walk`` that does not descend into ``skip`` node types (except the root)."""
+def _deferred_parts(node: ast.AST) -> list[ast.AST] | None:
+    """For a node whose evaluation defers part of itself, the parts that run NOW; else None.
+
+    A lambda/def runs only its defaults and decorators when evaluated; a generator expression
+    runs only its first iterable (the element, conditions and later loops run on consumption).
+    Comprehensions and class bodies run immediately, so they are not deferred.
+    """
+    if isinstance(node, ast.Lambda):
+        return [d for d in (*node.args.defaults, *node.args.kw_defaults) if d is not None]
+    if isinstance(node, _FUNCS):
+        defaults = [d for d in (*node.args.defaults, *node.args.kw_defaults) if d is not None]
+        return [*node.decorator_list, *defaults]
+    if isinstance(node, ast.GeneratorExp):
+        return [node.generators[0].iter]
+    return None
+
+
+def _eager(node: ast.AST) -> Iterator[ast.AST]:
+    """Every node evaluated when ``node`` is evaluated (or a statement executes), root included."""
     stack = [node]
     while stack:
         current = stack.pop()
+        parts = _deferred_parts(current)
+        if parts is not None:
+            stack.extend(parts)
+            continue
         yield current
-        for child in ast.iter_child_nodes(current):
-            if not isinstance(child, skip):
-                stack.append(child)
+        stack.extend(ast.iter_child_nodes(current))
 
 
 def hardcoded_home(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
@@ -150,9 +169,8 @@ def unscoped_secret_fallback(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
 
 
 def _capture_lines(expr: ast.AST) -> Iterator[int]:
-    if isinstance(expr, (ast.Lambda, *_FUNCS)):
-        return  # a deferred body reads at call time, which is the fix, not the bug
-    for node in _walk_skipping(expr, (ast.Lambda, *_FUNCS)):
+    # Deferred bodies (lambda, def, generator element) read at call time: that is the fix.
+    for node in _eager(expr):
         if isinstance(node, ast.Call):
             name = _call_name(node)
             leaf = name.rsplit(".", 1)[-1]
@@ -206,19 +224,23 @@ def _import_time_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
 
 
 def _import_time_exprs(stmt: ast.stmt) -> Iterator[ast.AST]:
-    """Expressions a statement evaluates at import (not its deferred function bodies)."""
-    if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and stmt.value:
-        yield stmt.value
-    elif isinstance(stmt, (*_FUNCS, ast.ClassDef)):
-        yield from stmt.decorator_list
-        if isinstance(stmt, ast.ClassDef):
-            yield from (*stmt.bases, *(kw.value for kw in stmt.keywords))
-        else:
-            yield from (d for d in [*stmt.args.defaults, *stmt.args.kw_defaults] if d is not None)
-    elif isinstance(stmt, (ast.For, ast.While)):
-        yield stmt.iter if isinstance(stmt, ast.For) else stmt.test
+    """What a statement evaluates at import, besides its nested blocks (walked separately)."""
+    if isinstance(stmt, ast.ClassDef):
+        yield from (*stmt.decorator_list, *stmt.bases, *(kw.value for kw in stmt.keywords))
+    elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, *_FUNCS)):
+        yield stmt  # _eager keeps only a def's decorators and defaults
+    elif isinstance(stmt, ast.Expr):
+        # A bare call is an action, not a capture; a walrus inside it binds a module name.
+        yield from (n for n in _eager(stmt.value) if isinstance(n, ast.NamedExpr))
+    elif isinstance(stmt, (ast.If, ast.While)):
+        yield stmt.test
+    elif isinstance(stmt, ast.For):
+        yield stmt.iter
+    elif isinstance(stmt, ast.With):
+        yield from (item.context_expr for item in stmt.items)
     elif isinstance(stmt, ast.Match):
         yield stmt.subject
+        yield from (case.guard for case in stmt.cases if case.guard is not None)
 
 
 def import_time_capture(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
@@ -250,8 +272,9 @@ def _deadline(call: ast.Call, name: str = "timeout", position: int | None = None
 
 
 def _awaited_calls(body: list[ast.stmt]) -> Iterator[ast.Call]:
+    """Calls awaited while ``body`` runs; a coroutine defined there runs later, unbounded."""
     for stmt in body:
-        for node in _walk_skipping(stmt, (ast.Lambda, *_FUNCS)):
+        for node in _eager(stmt):
             if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
                 yield node.value
 
@@ -262,8 +285,10 @@ def _bounded_calls(tree: ast.Module) -> set[int]:
     bounded: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _call_name(node).rpartition(".")[2] == "wait_for":
-            if node.args and _deadline(node, "timeout", 1):
-                bounded.add(id(node.args[0]))
+            awaitable = node.args[0] if node.args else next(
+                (kw.value for kw in node.keywords if kw.arg in ("fut", "aw")), None)
+            if awaitable is not None and _deadline(node, "timeout", 1):
+                bounded.add(id(awaitable))
         elif isinstance(node, ast.AsyncWith):
             for item in node.items:
                 ctx_call = item.context_expr
@@ -295,7 +320,7 @@ def sync_config_in_async(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
         if not isinstance(func, ast.AsyncFunctionDef):
             continue
         for stmt in func.body:
-            for node in _walk_skipping(stmt, (ast.Lambda, *_FUNCS)):
+            for node in _eager(stmt):
                 if isinstance(node, ast.Call):
                     if _call_name(node).rsplit(".", 1)[-1] in _SYNC_CONFIG_CALLS:
                         yield node.lineno

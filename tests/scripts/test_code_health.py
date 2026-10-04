@@ -106,6 +106,15 @@ _STUB = {"pkg/b.py": "def legacy(x):\n    return x\n"}
     ({}, {"pkg/c.py": _ENV.format("if __name__ != '__main__':\n    CACHED = os.getenv('PATH')")}, True),
     ({}, {"pkg/c.py": _ENV.format("for _ in range(1):\n    CACHED = os.getenv('PATH')")}, True),
     ({}, {"pkg/c.py": _ENV.format("current = lambda: os.getenv('PATH')")}, False),  # deferred read
+    ({}, {"pkg/c.py": _ENV.format("current = lambda p=os.getenv('PATH'): p")}, True),  # eager default
+    ({}, {"pkg/c.py": _ENV.format("with open(os.getenv('PATH', 'x'), encoding='utf-8') as fh:\n    pass")}, True),
+    ({}, {"pkg/c.py": _ENV.format("current = (os.getenv('PATH') for _ in range(1))")}, False),
+    # a coroutine defined inside the deadline runs after it, so it is not bounded by it
+    ({}, {"pkg/p.py": _PROC.format("    async with asyncio.timeout(1):\n        async def later():\n"
+                                   "            return await proc.communicate()\n    return later")}, True),
+    ({}, {"pkg/p.py": _PROC.format("    return await asyncio.wait_for(fut=proc.communicate(), timeout=1)")}, False),
+    # a BOM reads the same from git and from disk, so a new BOM file's debt is still measured
+    ({}, {"pkg/bom.py": "\ufeff" + _LEGACY}, True),
 ])
 def test_verdicts_follow_ownership_deadlines_and_import_execution(tmp_path, capsys, extra_base, files, blocks):
     repo, base = _repo(tmp_path)

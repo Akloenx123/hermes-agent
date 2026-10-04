@@ -106,7 +106,8 @@ def read_file(repo: Path, tree: str | None, path: str) -> str | None:
     )
     if proc.returncode != 0:
         return None
-    return proc.stdout.decode("utf-8", errors="replace")
+    # Same decoding as the working-tree read: a BOM must not make the two sides disagree.
+    return proc.stdout.decode("utf-8-sig", errors="replace")
 
 
 def tracked_files(repo: Path, tree: str | None) -> list[str]:
