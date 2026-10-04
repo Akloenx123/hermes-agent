@@ -369,6 +369,7 @@ User message → AIAgent._run_agent_loop()
 - **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` — use `exc_info=True` for unexpected errors so stack traces appear in logs
 - **Error messages**: every user-facing error message names the actual cause and the remediation step — never the proximate symptom. A missing API key is "no OpenRouter API key configured — set `OPENROUTER_API_KEY`", never "payment/credit error"; a failed request logs the exception class and message (secret-redacted) rather than an empty reason; a timed-out long job reports the timeout and where the job went, not a fallback-routing noise string. If you know the cause, say it; if you don't, say what you do know plus what to check — never a placeholder that points somewhere else.
 - **Cross-platform**: Never assume Unix. See [Cross-Platform Compatibility](#cross-platform-compatibility)
+- **Code health ratchet**: `python scripts/check` runs every blocking lint check CI runs, with the same pinned tools (`--install-hook` makes it your pre-commit hook). Its code-health part gives every function and file its own cap: new functions stay at cyclomatic complexity ≤ 20, ≤ 300 lines and nesting ≤ 6, files at ≤ 2,000 lines, and code already over a target may only get smaller. Pattern rules (blind `except Exception`, missing timeouts, profile-scope hazards such as a hardcoded `~/.hermes` or a new `HERMES_*` env var) compare fingerprints, so existing debt never blocks you but a new instance does. Each finding prints its fix; a genuine exception takes `# health: allow <RULE> -- <why>` on the line, which reviewers read. Rules and targets: `scripts/code_health/config.py`.
 
 ### Fail loud at integration boundaries
 
@@ -973,9 +974,10 @@ refactor/description   # Code restructuring
 ### Before submitting
 
 1. **Run tests**: use `scripts/run_tests.sh` for the same environment and per-file isolation as CI.
-2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
-4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+2. **Run the lint checks**: `python scripts/check` (the blocking lint lane, locally).
+3. **Test manually**: Run `hermes` and exercise the code path you changed
+4. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
+5. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
 ### PR description
 
