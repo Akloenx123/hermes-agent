@@ -36,6 +36,11 @@ def resolve_rev(repo: Path, rev: str) -> str:
     return git(repo, "rev-parse", "--verify", f"{rev}^{{commit}}").strip()
 
 
+def resolve_tree(repo: Path, rev: str) -> str:
+    """A head may be any tree-ish: a commit, or the index's tree from ``git write-tree``."""
+    return git(repo, "rev-parse", "--verify", f"{rev}^{{tree}}").strip()
+
+
 def default_base(repo: Path) -> str:
     """Merge-base of HEAD with origin/main (local runs); CI passes ``--base`` explicitly."""
     for ref in ("origin/main", "main"):

@@ -19,7 +19,7 @@ def _allow_lines(finding: Finding) -> list[int]:
 
 
 def apply_allows(findings: list[Finding], head: dict[str, FileMeasure]) -> None:
-    """Mark findings whose line carries ``# health: allow RULE -- why`` as allowed.
+    """Mark findings whose line carries ``# health: allow RULE -- why`` (in a real comment) as allowed.
 
     A bare allow without a reason does not count; the finding stays and says why.
     """
@@ -28,7 +28,7 @@ def apply_allows(findings: list[Finding], head: dict[str, FileMeasure]) -> None:
         if fm is None:
             continue
         for line_no in _allow_lines(finding):
-            text = fm.source_line(line_no)
+            text = fm.comments.get(line_no, "")
             match = _ALLOW.search(text)
             if match and finding.rule in {r.strip() for r in match.group(1).split(",")}:
                 finding.allowed_reason = match.group(2).strip()

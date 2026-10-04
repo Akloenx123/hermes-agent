@@ -66,10 +66,6 @@ def _str_arg(call: ast.Call, index: int = 0) -> str | None:
     return None
 
 
-def _has_kw(call: ast.Call, name: str) -> bool:
-    return any(kw.arg in (name, None) for kw in call.keywords)
-
-
 def _env_read_name(node: ast.AST) -> str | None:
     """Env var name for ``os.getenv("X")`` / ``os.environ.get("X")`` / ``os.environ["X"]``."""
     if isinstance(node, ast.Call):
@@ -154,6 +150,8 @@ def unscoped_secret_fallback(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
 
 
 def _capture_lines(expr: ast.AST) -> Iterator[int]:
+    if isinstance(expr, (ast.Lambda, *_FUNCS)):
+        return  # a deferred body reads at call time, which is the fix, not the bug
     for node in _walk_skipping(expr, (ast.Lambda, *_FUNCS)):
         if isinstance(node, ast.Call):
             name = _call_name(node)
@@ -166,56 +164,129 @@ def _capture_lines(expr: ast.AST) -> Iterator[int]:
             return
 
 
-def _is_main_guard(stmt: ast.stmt) -> bool:
-    return isinstance(stmt, ast.If) and "__main__" in ast.unparse(stmt.test)
+def _main_guard(stmt: ast.stmt) -> str | None:
+    """``"=="``/``"!="`` for ``if __name__ <op> "__main__":``, else None."""
+    test = stmt.test if isinstance(stmt, ast.If) else None
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and len(test.comparators) == 1):
+        return None
+    sides = {ast.unparse(test.left), ast.unparse(test.comparators[0])}
+    if sides != {"__name__", "'__main__'"}:
+        return None
+    return {ast.Eq: "==", ast.NotEq: "!="}.get(type(test.ops[0]))
+
+
+# Statement blocks that execute when the enclosing block does (``match`` cases via ``cases``).
+_BLOCKS = ("body", "orelse", "finalbody")
+_COMPOUND = (ast.If, ast.Try, ast.TryStar, ast.With, ast.For, ast.While, ast.Match)
+
+
+def _import_time_blocks(stmt: ast.stmt) -> Iterator[list[ast.stmt]]:
+    guard = _main_guard(stmt)
+    if isinstance(stmt, ast.If) and guard is not None:
+        # Only the branch that runs on import: ``else`` of ``==``, body of ``!=``.
+        yield stmt.orelse if guard == "==" else stmt.body
+        return
+    for name in _BLOCKS:
+        yield getattr(stmt, name, None) or []
+    for handler in getattr(stmt, "handlers", None) or []:
+        yield handler.body
+    for case in getattr(stmt, "cases", None) or []:
+        yield case.body
 
 
 def _import_time_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
-    """Statements that run at import: module/class bodies and their if/try/with blocks."""
+    """Statements that run at import: module/class bodies and every compound block in them."""
     for stmt in body:
-        if _is_main_guard(stmt):
-            continue
         yield stmt
         if isinstance(stmt, ast.ClassDef):
             yield from _import_time_statements(stmt.body)
-        elif isinstance(stmt, (ast.If, ast.Try, ast.With)):
-            for name in ("body", "orelse", "finalbody"):
-                yield from _import_time_statements(getattr(stmt, name, None) or [])
-            for handler in getattr(stmt, "handlers", None) or []:
-                yield from _import_time_statements(handler.body)
+        elif isinstance(stmt, _COMPOUND):
+            for block in _import_time_blocks(stmt):
+                yield from _import_time_statements(block)
+
+
+def _import_time_exprs(stmt: ast.stmt) -> Iterator[ast.AST]:
+    """Expressions a statement evaluates at import (not its deferred function bodies)."""
+    if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and stmt.value:
+        yield stmt.value
+    elif isinstance(stmt, (*_FUNCS, ast.ClassDef)):
+        yield from stmt.decorator_list
+        if isinstance(stmt, ast.ClassDef):
+            yield from (*stmt.bases, *(kw.value for kw in stmt.keywords))
+        else:
+            yield from (d for d in [*stmt.args.defaults, *stmt.args.kw_defaults] if d is not None)
+    elif isinstance(stmt, (ast.For, ast.While)):
+        yield stmt.iter if isinstance(stmt, ast.For) else stmt.test
+    elif isinstance(stmt, ast.Match):
+        yield stmt.subject
 
 
 def import_time_capture(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for stmt in _import_time_statements(tree.body):
-        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and stmt.value:
-            yield from _capture_lines(stmt.value)
-        elif isinstance(stmt, _FUNCS):
-            for default in [*stmt.args.defaults, *stmt.args.kw_defaults]:
-                if default is not None:
-                    yield from _capture_lines(default)
+        for expr in _import_time_exprs(stmt):
+            yield from _capture_lines(expr)
 
 
-def _bounded_by_wait_for(tree: ast.Module) -> set[int]:
-    """ids of calls passed to ``asyncio.wait_for``/``timeout`` (already bounded by the wrapper)."""
+def _finite(node: ast.AST | None) -> bool:
+    """A deadline expression that is present and not a literal ``None``."""
+    return node is not None and not (isinstance(node, ast.Constant) and node.value is None)
+
+
+def _deadline(call: ast.Call, name: str = "timeout", position: int | None = None) -> bool:
+    """True when ``call`` passes a finite deadline: ``name=<not None>``, the positional slot,
+    or ``**opts`` (an unknown mapping is trusted; a literal one must name the deadline)."""
+    if position is not None and len(call.args) > position:
+        return _finite(call.args[position])
+    for kw in call.keywords:
+        if kw.arg == name:
+            return _finite(kw.value)
+        if kw.arg is None:
+            if not isinstance(kw.value, ast.Dict):
+                return True
+            for key, value in zip(kw.value.keys, kw.value.values, strict=True):
+                if isinstance(key, ast.Constant) and key.value == name:
+                    return _finite(value)
+    return False
+
+
+def _awaited_calls(body: list[ast.stmt]) -> Iterator[ast.Call]:
+    for stmt in body:
+        for node in _walk_skipping(stmt, (ast.Lambda, *_FUNCS)):
+            if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
+                yield node.value
+
+
+def _bounded_calls(tree: ast.Module) -> set[int]:
+    """ids of calls an asyncio deadline bounds: the awaitable passed to ``wait_for(x, <finite>)``
+    and every call awaited directly inside ``async with asyncio.timeout(<finite>):``."""
     bounded: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _call_name(node).rpartition(".")[2] in ("wait_for", "timeout"):
-            bounded.update(id(arg) for arg in node.args)
+        if isinstance(node, ast.Call) and _call_name(node).rpartition(".")[2] == "wait_for":
+            if node.args and _deadline(node, "timeout", 1):
+                bounded.add(id(node.args[0]))
+        elif isinstance(node, ast.AsyncWith):
+            for item in node.items:
+                ctx_call = item.context_expr
+                if not isinstance(ctx_call, ast.Call):
+                    continue
+                leaf = _call_name(ctx_call).rpartition(".")[2]
+                slot = {"timeout": "delay", "timeout_at": "when"}.get(leaf)
+                if slot and _deadline(ctx_call, slot, 0):
+                    bounded.update(id(call) for call in _awaited_calls(node.body))
     return bounded
 
 
 def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
-    bounded = _bounded_by_wait_for(tree)
+    bounded = _bounded_calls(tree)
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _has_kw(node, "timeout") or id(node) in bounded:
+        if not isinstance(node, ast.Call) or id(node) in bounded:
             continue
-        name = _call_name(node)
-        head, _, leaf = name.rpartition(".")
-        if head == "subprocess" and leaf in _SUBPROCESS_WAITS:
+        head, _, leaf = _call_name(node).rpartition(".")
+        if head == "subprocess" and leaf in _SUBPROCESS_WAITS and not _deadline(node):
             yield node.lineno
-        elif leaf == "urlopen" and len(node.args) < 3:
+        elif leaf == "urlopen" and not _deadline(node, "timeout", 2):
             yield node.lineno
-        elif leaf == "communicate" and head and not node.args:
+        elif leaf == "communicate" and head and not _deadline(node, "timeout", 1):
             yield node.lineno
 
 

@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from scripts.code_health.cli import run
 
 REPO = Path(__file__).resolve().parents[2]
@@ -77,3 +79,37 @@ def test_moved_code_keeps_its_cap(tmp_path, capsys):
     renamed: dict[str, str | None] = {"pkg/a.py": None, "pkg/b.py": _LEGACY + "\n\n" + _SWALLOW}
     code, out = _verdict(repo, base, renamed, capsys)
     assert code == 0, out
+
+
+_RUN = "import subprocess\n\n\ndef f(cmd):\n    return subprocess.run(cmd{})\n"
+_PROC = "import asyncio\n\n\nasync def f(proc):\n{}\n"
+_ENV = "import os\n\n{}\n"
+_EXCEPT = "    try:\n        pass\n    except Exception:\n        pass\n"
+
+
+_STUB = {"pkg/b.py": "def legacy(x):\n    return x\n"}
+
+
+@pytest.mark.parametrize("extra_base, files, blocks", [
+    # one base unit is credit for one head unit: a copy of unchanged debt is new debt
+    ({}, {"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW + "\n\n" + _LEGACY.replace("legacy", "copied")}, True),
+    # a file rename re-keys each old hit once, so a second swallow in that function is new
+    ({}, {"pkg/a.py": None, "pkg/b.py": _LEGACY + "\n\n" + _SWALLOW + _EXCEPT}, True),
+    # a function moved over a same-name stub keeps its own cap, not the stub's
+    (_STUB, {"pkg/a.py": _SWALLOW, "pkg/b.py": _LEGACY}, False),
+    ({}, {"pkg/p.py": _RUN.format(", timeout=None")}, True),  # a disabled deadline is no deadline
+    ({}, {"pkg/p.py": _RUN.format(", **{}")}, True),
+    ({}, {"pkg/p.py": _PROC.format("    return await asyncio.wait_for(proc.communicate(), None)")}, True),
+    ({}, {"pkg/p.py": _PROC.format("    async with asyncio.timeout(1):\n        return await proc.communicate()")}, False),
+    # an allow directive inside a string literal waives nothing
+    ({}, {"pkg/p.py": _RUN.format("").replace("    return", "    print('health: allow HX006 -- doc')\n    return")}, True),
+    ({}, {"pkg/c.py": _ENV.format("if __name__ != '__main__':\n    CACHED = os.getenv('PATH')")}, True),
+    ({}, {"pkg/c.py": _ENV.format("for _ in range(1):\n    CACHED = os.getenv('PATH')")}, True),
+    ({}, {"pkg/c.py": _ENV.format("current = lambda: os.getenv('PATH')")}, False),  # deferred read
+])
+def test_verdicts_follow_ownership_deadlines_and_import_execution(tmp_path, capsys, extra_base, files, blocks):
+    repo, base = _repo(tmp_path)
+    if extra_base:
+        base = _commit(repo, extra_base)
+    code, out = _verdict(repo, base, files, capsys)
+    assert code == (1 if blocks else 0), out

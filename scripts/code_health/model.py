@@ -36,8 +36,11 @@ class FileMeasure:
     hits: Counter[Hit] = field(default_factory=Counter)
     # Line numbers of each hit occurrence, for reporting only.
     hit_lines: dict[Hit, list[int]] = field(default_factory=dict)
-    # 1-based line -> source text, for allow comments and messages.
+    # 1-based line -> source text, for messages.
     lines: list[str] = field(default_factory=list)
+    # 1-based line -> text of the real comment tokens on it (allow directives live only here,
+    # so a string literal that happens to say "health: allow" waives nothing).
+    comments: dict[int, str] = field(default_factory=dict)
 
     def add_hit(self, rule: str, scope: str, line_no: int) -> None:
         text = " ".join(self.source_line(line_no).split())

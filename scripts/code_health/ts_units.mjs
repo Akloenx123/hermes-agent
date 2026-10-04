@@ -91,6 +91,27 @@ function ownName(node) {
   return bindingName(node)
 }
 
+// Comment trivia (not string or template text) that carries a `health: allow` directive.
+function allowComments(sf, text) {
+  const found = new Map()
+  const collect = ranges => {
+    for (const range of ranges ?? []) {
+      const body = text.slice(range.pos, range.end)
+      if (body.includes('health:')) {
+        found.set(range.pos, [sf.getLineAndCharacterOfPosition(range.pos).line + 1, body])
+      }
+    }
+  }
+  const visit = node => {
+    collect(ts.getLeadingCommentRanges(text, node.pos))
+    collect(ts.getTrailingCommentRanges(text, node.end))
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  collect(ts.getLeadingCommentRanges(text, sf.endOfFileToken.pos))
+  return [...found.values()]
+}
+
 function measureFile(path) {
   const text = readFileSync(join(root, path), 'utf8')
   const kind = path.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
@@ -103,7 +124,9 @@ function measureFile(path) {
     return n === 1 ? q : `${q}#${n}`
   }
   // `lines` is a function's OWN lines: nested functions are their own units, so editing a
-  // closure inside a hook never counts against the hook itself.
+  // closure inside a hook never counts against the hook itself. A line is owned by the
+  // innermost function that covers it, so siblings sharing a line give it up once, not twice.
+  const owner = new Map() // line -> unit
   const walk = (node, stack, parent) => {
     let next = stack
     let nextParent = parent
@@ -117,10 +140,10 @@ function measureFile(path) {
       const params = node.parameters.map(p => p.getText(sf)).join(',')
       const body = (params + '=>' + (node.body ? node.body.getText(sf) : '')).replace(/\s+/g, ' ')
       const unit = {
-        q: qual, line: start, lines: end - start + 1, cc: complexity(node), nesting: nesting(node),
+        q: qual, line: start, cc: complexity(node), nesting: nesting(node),
         hash: createHash('sha1').update(body).digest('hex').slice(0, 16)
       }
-      if (parent) parent.lines -= end - start + 1
+      for (let line = start; line <= end; line++) owner.set(line, unit)
       units.push(unit)
       next = [...stack, qual.split('.').pop()]
       nextParent = unit
@@ -128,7 +151,9 @@ function measureFile(path) {
     ts.forEachChild(node, child => walk(child, next, nextParent))
   }
   walk(sf, [], null)
-  return { units }
+  for (const unit of units) unit.lines = 0
+  for (const unit of owner.values()) unit.lines++
+  return { units, comments: allowComments(sf, text) }
 }
 
 const paths = JSON.parse(readFileSync(0, 'utf8'))

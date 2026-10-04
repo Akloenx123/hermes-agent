@@ -3,6 +3,7 @@
 
     python scripts/check                # everything, against the merge-base with origin/main
     python scripts/check --only health  # just the code-health ratchet
+    python scripts/check --staged       # judge the index (the pre-commit hook runs this)
     python scripts/check --install-hook # run it as the git pre-commit hook
 
 CI runs the same command (``.github/workflows/lint.yml``), so a green local run means a green
@@ -13,9 +14,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -32,7 +38,7 @@ repo="$(git rev-parse --show-toplevel)"
 [ -f "$repo/scripts/check" ] || exit 0
 py=python3
 command -v python3 >/dev/null 2>&1 || py=python
-exec "$py" "$repo/scripts/check"
+exec "$py" "$repo/scripts/check" --staged
 """
 
 # name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml.
@@ -45,22 +51,74 @@ _GUARDS = {
 }
 
 
-def _run(argv: list[str]) -> tuple[int, str]:
+@dataclass
+class _Job:
+    argv: list[str]
+    cwd: Path = REPO
+    env: dict[str, str] | None = None
+
+
+def _run(job: _Job) -> tuple[int, str]:
     proc = subprocess.run(
-        argv, cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        stdin=subprocess.DEVNULL, timeout=900, check=False,
+        job.argv, cwd=job.cwd, env=job.env, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", stdin=subprocess.DEVNULL, timeout=900, check=False,
     )
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
-def _jobs(only: str | None, base: str | None) -> dict[str, list[str]]:
-    jobs = {name: [sys.executable, *argv] for name, argv in _GUARDS.items()}
-    jobs["ruff"] = [*resolve_ruff(REPO), "check", "."]
+def _worktree_matches_index() -> bool:
+    unstaged = gitio.git(REPO, "diff", "--name-only", "-z").strip("\0")
+    untracked = gitio.git(REPO, "ls-files", "--others", "--exclude-standard", "-z").strip("\0")
+    return not unstaged and not untracked
+
+
+@contextmanager
+def _index_snapshot() -> Iterator[tuple[Path, dict[str, str]]]:
+    """The staged tree checked out on its own, plus git env that sees exactly that tree.
+
+    Unstaged edits stay where they are (no stash, no checkout); the index is read from a copy,
+    so nothing a checker runs can rewrite the user's real index.
+    """
+    git_dir = Path(gitio.git(REPO, "rev-parse", "--absolute-git-dir").strip())
+    index = Path(gitio.git(REPO, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+    with tempfile.TemporaryDirectory(prefix="hermes-check-index-") as tmp:
+        root = Path(tmp) / "tree"
+        gitio.git(REPO, "checkout-index", "-a", f"--prefix={root}{os.sep}")
+        index_copy = Path(tmp) / "index"
+        shutil.copyfile(index, index_copy)
+        env = {**os.environ, "GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(root),
+               "GIT_INDEX_FILE": str(index_copy)}
+        yield root, env
+
+
+def _jobs(only: str | None, base: str | None, head: str | None,
+          root: Path = REPO, env: dict[str, str] | None = None) -> dict[str, _Job]:
+    jobs = {name: _Job([sys.executable, *argv], root, env) for name, argv in _GUARDS.items()}
+    jobs["ruff"] = _Job([*resolve_ruff(REPO), "check", "."], root, env)
+    # The ratchet reads both sides from git, so it runs in the real repo against the head tree.
     health = [sys.executable, "-m", "scripts.code_health"]
-    jobs["health"] = health + (["--base", base] if base else [])
+    health += ["--base", base] if base else []
+    health += ["--head", head] if head else []
+    jobs["health"] = _Job(health)
     if only:
-        return {name: argv for name, argv in jobs.items() if name in only.split(",")}
+        return {name: job for name, job in jobs.items() if name in only.split(",")}
     return jobs
+
+
+def _run_all(args: argparse.Namespace) -> dict[str, tuple[int, str]]:
+    if not args.staged:
+        jobs = _jobs(args.only, args.base, None)
+        with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
+            return dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
+    # Pre-commit: judge the bytes being committed, not the working tree.
+    tree = gitio.git(REPO, "write-tree").strip()
+    with ExitStack() as stack:
+        root, env = REPO, None
+        if not _worktree_matches_index():
+            root, env = stack.enter_context(_index_snapshot())
+        jobs = _jobs(args.only, args.base, tree, root, env)
+        with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
+            return dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
 
 
 def install_hook() -> int:
@@ -81,17 +139,17 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--only", help=f"comma list of: {', '.join([*_GUARDS, 'ruff', 'health'])}")
     parser.add_argument("--base", help="base revision for the code-health ratchet")
+    parser.add_argument("--staged", action="store_true",
+                        help="check the index (what `git commit` records), not the working tree")
     parser.add_argument("--install-hook", action="store_true")
     args = parser.parse_args(argv)
     if args.install_hook:
         return install_hook()
     try:
-        jobs = _jobs(args.only, args.base)
+        results = _run_all(args)
     except RuntimeError as exc:
         print(f"scripts/check: {exc}", file=sys.stderr)
         return 2
-    with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
-        results = dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
     failed = [name for name, (code, _) in results.items() if code != 0]
     # A passing health run still carries advisories and comment-allowed findings that the
     # reviewer must see, so its report is always shown.

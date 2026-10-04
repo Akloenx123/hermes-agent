@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 import json
 import re
 import tempfile
@@ -44,6 +46,17 @@ def _own_complexity(fm: FileMeasure, cc_by_line: dict[int, int]) -> None:
         fm.units[qual].metrics["CC"] = value
 
 
+def _python_comments(text: str) -> dict[int, str]:
+    comments: dict[int, str] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                comments[tok.start[0]] = comments.get(tok.start[0], "") + tok.string
+    except (tokenize.TokenError, SyntaxError):
+        pass  # unparseable source has no AST findings to waive either
+    return comments
+
+
 class Measurer:
     def __init__(self, repo: Path, ruff: list[str], known_env: set[str]) -> None:
         self.repo = repo
@@ -81,6 +94,7 @@ class Measurer:
 
     def _python(self, fm: FileMeasure, text: str, ruff_file) -> None:
         fm.metrics["FILE_LINES"] = len(fm.lines)
+        fm.comments = _python_comments(text)
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SyntaxWarning)
@@ -112,6 +126,7 @@ class Measurer:
     @staticmethod
     def _typescript(fm: FileMeasure, data: dict) -> None:
         fm.metrics["FILE_LINES"] = len(fm.lines)
+        fm.comments = {line: text for line, text in data.get("comments", [])}
         for unit in data.get("units", []):
             fm.units[unit["q"]] = Unit(
                 qualname=unit["q"],

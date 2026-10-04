@@ -2,93 +2,126 @@
 
 Every unit has its own cap: a function or file already over target may not grow past the value
 it has on the base revision; anything new must meet the target. Pattern rules compare multisets
-of fingerprints per file, so fixing one violation and adding another still fails.
+of fingerprints, so fixing one violation and adding another still fails.
 
-Code that moves keeps its cap and its existing violations, matched by content: a unit's prior is
-the base unit with the same name-independent body hash (same file first, so an anonymous
-callback whose source-order ordinal shifted is still itself; then any file, for a moved
-function), else the base unit with the same qualname. Pattern hits follow ONLY such a proven
-unit move; deleting one function never pays for a violation somewhere else.
+Code that moves keeps its cap and its existing violations. Head units are matched to base units
+ONE-TO-ONE (a base unit is consumed by at most one head unit), in this order:
+
+1. same file, same name, same body (unchanged code; reserved first, so a copy of it is new);
+2. same file, same body (a rename, or an anonymous callback whose ordinal shifted);
+3. any file, same body, when the origin's name is gone from its own file (a real move);
+4. same file, same name (edited in place).
+
+Every base hit is then owned by exactly one head scope: the head unit its unit matched, else the
+same scope in the file's head path. Each old occurrence pays for one new occurrence, never two.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
 
 from scripts.code_health.config import ADVISORY_GROWTH, RULES_BY_ID, TARGETS
 from scripts.code_health.gitio import Change
 from scripts.code_health.model import MODULE_SCOPE, FileMeasure, Finding, Hit, Unit
 
-# (base path, base qualname) a head unit was matched to.
-Origin = tuple[str, str]
+Key = tuple[str, str]  # (path, qualname)
 
 
-@dataclass
-class _Moved:
-    """Base units absent from their own file at head: candidates for a cross-file move."""
+class _Matcher:
+    def __init__(self, base: dict[str, FileMeasure], head: dict[str, FileMeasure],
+                 base_of: dict[str, str | None], head_of: dict[str, str | None]) -> None:
+        self.base, self.head, self.base_of, self.head_of = base, head, base_of, head_of
+        self.taken: set[Key] = set()
+        self.match: dict[Key, tuple[str, Unit]] = {}
+        self.by_hash: dict[str, list[tuple[str, Unit]]] = defaultdict(list)
+        for bpath, bf in sorted(base.items()):
+            for unit in bf.units.values():
+                self.by_hash[unit.body_hash].append((bpath, unit))
 
-    units: dict[str, list[tuple[str, Unit]]] = field(default_factory=lambda: defaultdict(list))
+    def _base_file(self, hpath: str) -> tuple[str | None, FileMeasure | None]:
+        bpath = self.base_of.get(hpath, hpath)
+        return bpath, (self.base.get(bpath) if bpath else None)
 
-    def take(self, body_hash: str) -> tuple[str, Unit] | None:
-        bucket = self.units.get(body_hash)
-        return bucket.pop() if bucket else None
+    def _name_gone(self, bpath: str, qual: str) -> bool:
+        if "<anon>" in qual:  # ordinals are positional, never evidence that the unit survived
+            return True
+        hpath = self.head_of.get(bpath, bpath)
+        hf = self.head.get(hpath) if hpath else None
+        return hf is None or qual not in hf.units
+
+    def _claim(self, key: Key, origin: tuple[str, Unit]) -> None:
+        self.match[key] = origin
+        self.taken.add((origin[0], origin[1].qualname))
+
+    def _free(self, bpath: str | None, qual: str) -> bool:
+        return bpath is not None and (bpath, qual) not in self.taken
+
+    def run(self) -> dict[Key, tuple[str, Unit]]:
+        pending = [(hpath, q, u) for hpath, hf in sorted(self.head.items()) for q, u in hf.units.items()]
+        passes = (self._same_unchanged, self._same_file_body, self._moved_body, self._same_name)
+        for step in passes:
+            pending = [(hpath, q, u) for hpath, q, u in pending if not step(hpath, q, u)]
+        return self.match
+
+    def _same_unchanged(self, hpath: str, qual: str, unit: Unit) -> bool:
+        bpath, bf = self._base_file(hpath)
+        prior = bf.units.get(qual) if bf else None
+        if bpath is None or prior is None or prior.body_hash != unit.body_hash:
+            return False
+        if not self._free(bpath, qual):
+            return False
+        self._claim((hpath, qual), (bpath, prior))
+        return True
+
+    def _same_file_body(self, hpath: str, qual: str, unit: Unit) -> bool:
+        bpath, _ = self._base_file(hpath)
+        for opath, origin in self.by_hash.get(unit.body_hash, []):
+            if opath == bpath and self._free(opath, origin.qualname):
+                self._claim((hpath, qual), (opath, origin))
+                return True
+        return False
+
+    def _moved_body(self, hpath: str, qual: str, unit: Unit) -> bool:
+        for opath, origin in self.by_hash.get(unit.body_hash, []):
+            if self._free(opath, origin.qualname) and self._name_gone(opath, origin.qualname):
+                self._claim((hpath, qual), (opath, origin))
+                return True
+        return False
+
+    def _same_name(self, hpath: str, qual: str, unit: Unit) -> bool:
+        bpath, bf = self._base_file(hpath)
+        if bpath is None or bf is None or qual not in bf.units or not self._free(bpath, qual):
+            return False
+        self._claim((hpath, qual), (bpath, bf.units[qual]))
+        return True
 
 
-def _vanished(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
-              head_of: dict[str, str | None]) -> _Moved:
-    moved = _Moved()
-    for bpath, bf in base.items():
-        hpath = head_of.get(bpath, bpath)
-        hf = head.get(hpath) if hpath else None
-        live_hashes = {u.body_hash for u in hf.units.values()} if hf else set()
-        for unit in bf.units.values():
-            if unit.body_hash not in live_hashes:
-                moved.units[unit.body_hash].append((bpath, unit))
-    return moved
-
-
-def _prior(qual: str, unit: Unit, bpath: str | None, bf: FileMeasure | None,
-           moved: _Moved) -> tuple[Unit, Origin] | None:
-    if bf is not None and bpath is not None:
-        same_body = [u for u in bf.units.values() if u.body_hash == unit.body_hash]
-        if same_body:
-            pick = next((u for u in same_body if u.qualname == qual), same_body[0])
-            return pick, (bpath, pick.qualname)
-        if qual in bf.units:
-            return bf.units[qual], (bpath, qual)
-    taken = moved.take(unit.body_hash)
-    return (taken[1], (taken[0], taken[1].qualname)) if taken else None
-
-
-def _metric_findings(path: str, hf: FileMeasure, bpath: str | None, bf: FileMeasure | None,
-                     moved: _Moved) -> tuple[list[Finding], dict[str, Origin]]:
-    findings: list[Finding] = []
+def _file_findings(path: str, hf: FileMeasure, bf: FileMeasure | None) -> list[Finding]:
     lines = hf.metrics.get("FILE_LINES", 0)
-    if lines > TARGETS["FILE_LINES"]:
-        base_lines = bf.metrics.get("FILE_LINES", 0) if bf else 0
-        cap = max(TARGETS["FILE_LINES"], base_lines)
-        if lines > cap:
-            grew_over = base_lines > TARGETS["FILE_LINES"] and "FILE_LINES" in ADVISORY_GROWTH
-            findings.append(Finding(path, "FILE_LINES", MODULE_SCOPE, 1, _detail(
-                lines, TARGETS["FILE_LINES"], base_lines if bf else None, "lines"),
-                blocking=not grew_over))
-    origins: dict[str, Origin] = {}
+    if lines <= TARGETS["FILE_LINES"]:
+        return []
+    base_lines = bf.metrics.get("FILE_LINES", 0) if bf else 0
+    if lines <= max(TARGETS["FILE_LINES"], base_lines):
+        return []
+    grew_over = base_lines > TARGETS["FILE_LINES"] and "FILE_LINES" in ADVISORY_GROWTH
+    return [Finding(path, "FILE_LINES", MODULE_SCOPE, 1, _detail(
+        lines, TARGETS["FILE_LINES"], base_lines if bf else None, "lines"), blocking=not grew_over)]
+
+
+def _unit_findings(path: str, hf: FileMeasure, match: dict[Key, tuple[str, Unit]]) -> list[Finding]:
+    findings: list[Finding] = []
     for qual, unit in hf.units.items():
-        matched = _prior(qual, unit, bpath, bf, moved)
-        prior = matched[0] if matched else None
-        if matched:
-            origins[qual] = matched[1]
+        origin = match.get((path, qual))
+        prior = origin[1] if origin else None
         for metric, value in unit.metrics.items():
             target = TARGETS[metric]
             if value <= target:
                 continue
             was = prior.metrics.get(metric) if prior else None
-            cap = max(target, was or 0)
-            if value > cap:
+            if value > max(target, was or 0):
                 findings.append(Finding(path, metric, qual, unit.line,
                                         _detail(value, target, was, metric)))
-    return findings, origins
+    return findings
 
 
 def _detail(value: int, target: int, was: int | None, what: str) -> str:
@@ -99,18 +132,18 @@ def _detail(value: int, target: int, was: int | None, what: str) -> str:
     return f"{what} {value} > {was}, its value on main (over target {target}: it may only go down)"
 
 
-def _base_hits(path: str, bf: FileMeasure | None, origins: dict[str, Origin],
-               base: dict[str, FileMeasure]) -> Counter[Hit]:
-    """The base hits a head file is compared against: its own base file's, plus those of each
-    unit that provably moved or was renamed into it (re-keyed to the unit's head scope)."""
-    counter: Counter[Hit] = Counter(bf.hits) if bf else Counter()
-    for qual, (opath, oqual) in origins.items():
-        if (opath, oqual) == (path, qual) or opath not in base:
-            continue
-        for hit, count in base[opath].hits.items():
-            if hit.scope == oqual:
-                counter[Hit(hit.rule, qual, hit.text)] += count
-    return counter
+def _owned_base_hits(base: dict[str, FileMeasure], head_of: dict[str, str | None],
+                     match: dict[Key, tuple[str, Unit]]) -> dict[str, Counter[Hit]]:
+    """Each base hit, re-keyed once to the head (path, scope) that now owns it."""
+    owner = {(opath, origin.qualname): key for key, (opath, origin) in match.items()}
+    owned: dict[str, Counter[Hit]] = defaultdict(Counter)
+    for bpath, bf in base.items():
+        for hit, count in bf.hits.items():
+            hpath, scope = owner.get((bpath, hit.scope), (head_of.get(bpath, bpath), hit.scope))
+            if hpath is None:
+                continue
+            owned[hpath][Hit(hit.rule, scope, hit.text)] += count
+    return owned
 
 
 def _hit_findings(path: str, hf: FileMeasure, base_hits: Counter[Hit]) -> list[Finding]:
@@ -130,13 +163,13 @@ def compare(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
             changes: list[Change]) -> list[Finding]:
     base_of = {c.new: c.old for c in changes if c.new}
     head_of = {c.old: c.new for c in changes if c.old}
-    moved = _vanished(base, head, head_of)
+    match = _Matcher(base, head, base_of, head_of).run()
+    owned = _owned_base_hits(base, head_of, match)
     findings: list[Finding] = []
     for path in sorted(head):
         hf = head[path]
         bpath = base_of.get(path, path)
-        bf = base.get(bpath) if bpath else None
-        metric, origins = _metric_findings(path, hf, bpath, bf, moved)
-        findings += metric
-        findings += _hit_findings(path, hf, _base_hits(path, bf, origins, base))
+        findings += _file_findings(path, hf, base.get(bpath) if bpath else None)
+        findings += _unit_findings(path, hf, match)
+        findings += _hit_findings(path, hf, owned.get(path, Counter()))
     return findings

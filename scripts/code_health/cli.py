@@ -31,7 +31,7 @@ otherwise the target. New code meets the target; existing code may only go down.
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="code_health", description=__doc__)
     p.add_argument("--base", help="base revision (default: merge-base of HEAD with origin/main)")
-    p.add_argument("--head", help="head revision (default: the working tree, untracked included)")
+    p.add_argument("--head", help="head commit or tree (default: the working tree, untracked included)")
     p.add_argument("--report", action="store_true", help="burn-down summary of the whole head tree")
     p.add_argument("--json", action="store_true", help="machine-readable findings")
     p.add_argument("--print-pins", action="store_true",
@@ -54,7 +54,8 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False) -> int:
     if not head_paths:
         print("code health: no measured files changed")
         return 0
-    needs_ruff = any(p.endswith(".py") for p in head_paths)
+    # Base files are measured too: a deleted .py still needs ruff on the base side.
+    needs_ruff = any(p.endswith(".py") for p in (*head_paths, *base_paths))
     ruff = resolve_ruff(repo) if needs_ruff else []
     measurer = Measurer(repo, ruff, known_env=gitio.known_env_names(repo, base))
     base_m = measurer.measure(base, base_paths)
@@ -82,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_pins:
         print(f"ruff=={pinned_version(repo)}")
         return 0
-    head = gitio.resolve_rev(repo, args.head) if args.head else None
+    head = gitio.resolve_tree(repo, args.head) if args.head else None
     try:
         if args.report:
             return _report(repo, head)
