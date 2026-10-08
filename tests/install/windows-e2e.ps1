@@ -1660,8 +1660,8 @@ function Invoke-CheckedPhaseUpdate {
 function Invoke-PhaseVerifyStamp {
     # Runs AFTER everything (install, update, the new runtime's launch and its
     # smoke checks): the bootstrap-complete receipt and the checkout's source
-    # stamp must both tell the truth about the final HEAD. A separate phase —
-    # not an install-phase check — because the bootstrap marker can complete
+    # stamp must both tell the truth about the final HEAD. A separate phase --
+    # not an install-phase check -- because the bootstrap marker can complete
     # on a LATER run than the install itself.
     $state = Read-State
     $head = Get-InstalledHead

@@ -199,7 +199,7 @@ $script:Ui = $null
 $script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-# ── The shim: repo-owned HTML in a chromeless default-browser app window ───
+# -- The shim: repo-owned HTML in a chromeless default-browser app window ---
 # The window is a veneer, not a participant: the update runs identically with
 # or without it (default browser missing/failed degrades to the WinForms card below,
 # then log-only). It never consumes child output; it polls /progress for the
@@ -335,7 +335,7 @@ function Start-UiServer([string]$HtmlPath) {
         [void]$ps.BeginInvoke()
 
         # Readiness handshake. BeginInvoke returns before the runspace has
-        # opened its pipeline and JIT'd the script block — on a loaded machine
+        # opened its pipeline and JIT'd the script block -- on a loaded machine
         # that is seconds, during which the kernel ACCEPTS connections into
         # the listener's backlog and nobody answers them. Anything that
         # trusted "listener bound" as "server serving" (the browser window
@@ -377,7 +377,7 @@ function Stop-UiServer([switch]$LeaveWindow) {
     try { $script:UiServer.PowerShell.Stop() } catch {}
     try { $script:UiServer.Runspace.Close() } catch {}
     # On success the window closes itself out from under the user (the whole
-    # point); on error we LEAVE it — the page holds the failure state and the
+    # point); on error we LEAVE it -- the page holds the failure state and the
     # user closes it when they've read it.
     if (-not $LeaveWindow) {
         try {
@@ -461,7 +461,7 @@ function Publish-UiProgress([string]$Message) {
     }
 }
 
-# ── Fallback card (no Edge / no HTML): same shape in WinForms ──────────────
+# -- Fallback card (no Edge / no HTML): same shape in WinForms --------------
 # Matches the shim pixel-for-pixel in spirit -- loader, one title, one live
 # stage/elapsed line, OS light/dark -- so degrading is invisible to the user.
 function Get-AppsUseLightTheme {
@@ -474,7 +474,7 @@ function Get-AppsUseLightTheme {
 function Show-ProgressWindow {
     if ($NoUi) { return }
 
-    # ── Primary: the HTML shim in a chromeless default-browser app window ──
+    # -- Primary: the HTML shim in a chromeless default-browser app window --
     # Same footprint as the card (280x320), spawned as a normal window: it
     # claims attention once by appearing, then competes with nothing.
     $htmlPath = Get-UiHtmlPath
@@ -554,7 +554,7 @@ function Show-ProgressWindow {
         $form.Show()
         # `cmd start /b` spawned us backgrounded, so the card comes up
         # behind everything without one explicit activation. Claim it ONCE
-        # (so the user knows the update started), then never again — the
+        # (so the user knows the update started), then never again -- the
         # window is decoration and competes with nothing (no TopMost).
         try {
             $form.Activate()
@@ -583,7 +583,7 @@ function Show-ErrorFinale([string]$Message) {
     # relaunched Desktop surfaces the result message.
     if ($script:UiServer) {
         # The shim renders the error state itself; leave the window up for
-        # the user to read and close. Nothing to hold for — the page keeps
+        # the user to read and close. Nothing to hold for -- the page keeps
         # the state after the listener dies.
         Publish-UiEvent "error" $Message
         Stop-UiServer -LeaveWindow
@@ -624,7 +624,7 @@ function Show-ManualFinale([string]$Message) {
     # Update landed but the Desktop did not verifiably come back. Same terse
     # shape as the error finale, success glyph semantics: the shim renders
     # `manual` itself; the WinForms card swaps its copy. Held so the user
-    # actually sees the instruction — this window is the only surface until
+    # actually sees the instruction -- this window is the only surface until
     # they reopen Hermes themselves.
     if ($script:UiServer) {
         Publish-UiEvent "manual" $Message
@@ -746,7 +746,7 @@ function Start-DesktopRelaunch {
     # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
     # the pid exists, or the fallback spawn returned a live process). The
     # finally block downgrades the on-screen/on-disk outcome when it didn't
-    # — the sibling truth contract to posix.sh's launch acceptance.
+    # -- the sibling truth contract to posix.sh's launch acceptance.
     if (-not $RelaunchExe) { return $false }
     # electron-builder replaces win-unpacked in place. After a successful
     # update it can remove the old Hermes.exe before writing the replacement,
@@ -795,7 +795,7 @@ function Start-DesktopRelaunch {
                             $p = Get-Process -Id $r.ProcessId -ErrorAction Stop
                             $hwnd = $p.MainWindowHandle
                         } catch {
-                            # Process died before showing a window — that is a
+                            # Process died before showing a window -- that is a
                             # failed launch, not merely an unfocused one.
                             Write-HandoffLog "WARNING: relaunched desktop exited before its window appeared"
                             $spawned = $false
@@ -823,7 +823,7 @@ function Start-DesktopRelaunch {
         # Middle rung: explorer.exe-mediated launch. On some machines
         # Win32_Process.Create fails outright (observed ReturnValue 8,
         # "unknown failure"), and the tethered fallback below re-attaches the
-        # Desktop to this console — its stdout then floods the console and the
+        # Desktop to this console -- its stdout then floods the console and the
         # window can't close while the app lives. Explorer re-parents the
         # target exactly like a normal shell launch, giving the same
         # no-console detachment WMI would have. Explorer returns no pid, so
@@ -1179,16 +1179,16 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
-# `hermes update` can COMPLETE (its output carries "✓ Update complete!") and
+# `hermes update` can COMPLETE (its output carries "\u2713 Update complete!") and
 # still be killed with the idle-watchdog sentinel 124: the post-update phase
 # (gateway restart hand-off) stayed alive and silent past the ceiling, so
 # Invoke-HermesStep terminated the tree (#96205). The install is done; failing
 # would keep the old Desktop and a legacy install would re-run the whole update.
 # Surface success so the hand-off verifies, restores the gateways and relaunches.
 # Only 124 is remapped, and never when anything after the banner reports a
-# failure: the restart/verify phase prints "✗ Update not complete", "Update
-# incomplete — …", "✗ <unit> failed to come back after restart" or
-# "verification incomplete" there. \u2717 (✗) stays an escape: Windows
+# failure: the restart/verify phase prints "\u2717 Update not complete", "Update
+# incomplete -- ...", "\u2717 <unit> failed to come back after restart" or
+# "verification incomplete" there. \u2717 (ballot X) stays an escape: Windows
 # PowerShell reads this BOM-less script as ANSI, never as UTF-8.
 function Resolve-HermesUpdateOutcome($StepResult) {
     $banner = if ($StepResult.Output) { $StepResult.Output.LastIndexOf('Update complete!') } else { -1 }
@@ -1234,9 +1234,9 @@ $manualAction = $false
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
 
-# ── -SelfTestUi: drive the shim to both terminal states, no update ─────────
+# -- -SelfTestUi: drive the shim to both terminal states, no update ---------
 # Manual QA for the Edge shell without a checkout or a real update. Exits
-# before the marker/desktop/venv machinery — touches nothing. Off Windows
+# before the marker/desktop/venv machinery -- touches nothing. Off Windows
 # (or without Edge) the loopback server still starts and the URL prints, so
 # the page can be QA'd in any browser; HERMES_SELFTEST_FAIL=1 exercises the
 # error state, HERMES_SELFTEST_HOLD_SECONDS delays the terminal event.
@@ -1745,7 +1745,7 @@ try {
     #   1. durable result + marker removal (the relaunched Desktop consumes
     #      the result on boot and must not park on our marker);
     #   2. attempt the relaunch and require ACCEPTANCE;
-    #   3. only then the terminal UI state — done means "Hermes is back",
+    #   3. only then the terminal UI state -- done means "Hermes is back",
     #      manual means "it is not, reopen it", error is error (and still
     #      tries to bring the app back after showing itself).
     if ($script:MarkerClaim -eq "refused") {

@@ -1,5 +1,5 @@
 # ============================================================================
-# windows-bundled-drive-update.ps1 — drive the REAL in-app update surface of
+# windows-bundled-drive-update.ps1 -- drive the REAL in-app update surface of
 # the INSTALLED (MSIX) desktop app via UI Automation.
 # ============================================================================
 # The packaged arm's whole point: a real user trigger starts the update
@@ -18,7 +18,7 @@
 #   3. when the OS App Installer confirmation window appears, click its
 #      Update/Install button (UpdateSettings OnLaunch ShowPrompt=false means
 #      it usually does NOT appear; tolerate both).
-#   4. wait for the app processes to exit (the hand-off quits the app) —
+#   4. wait for the app processes to exit (the hand-off quits the app) --
 #      exit 0 = the trigger was clicked by THIS driver and the app exited.
 #
 # The driver never launches a new app instance: proving the NEW process

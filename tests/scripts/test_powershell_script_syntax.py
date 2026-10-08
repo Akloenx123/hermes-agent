@@ -76,6 +76,44 @@ def test_fetched_scripts_have_no_utf8_bom(script: Path) -> None:
     )
 
 
+# Windows PowerShell 5.1 runs a BOM-less script with -File in the system ANSI
+# code page, not UTF-8, and the BOM is off the table (see above). On a CJK
+# code page (936/932/949) a multi-byte UTF-8 sequence, even inside a comment,
+# mis-decodes and the script dies before its first statement: the Desktop
+# update hand-off (scripts/desktop-update/windows.ps1) never started on
+# Chinese Windows (#134960). Pure ASCII decodes the same under every code
+# page, BOM or not. Recursive on purpose: the hand-off scripts live in a
+# subdirectory.
+SHIPPED_PS1_SCRIPTS = sorted(
+    set(REPO_ROOT.glob("*.ps1"))
+    | set(REPO_ROOT.glob("scripts/**/*.ps1"))
+    | set(REPO_ROOT.glob("apps/desktop/scripts/*.ps1"))
+    | set(REPO_ROOT.glob("tests/install/**/*.ps1"))
+)
+
+
+@pytest.mark.parametrize(
+    "script", SHIPPED_PS1_SCRIPTS, ids=lambda p: p.relative_to(REPO_ROOT).as_posix()
+)
+def test_powershell_scripts_are_pure_ascii(script: Path) -> None:
+    offenders = [
+        number
+        for number, line in enumerate(script.read_bytes().splitlines(), start=1)
+        if any(byte >= 0x80 for byte in line)
+    ]
+    assert not offenders, (
+        f"{script.relative_to(REPO_ROOT)} has non-ASCII bytes on line(s) "
+        f"{offenders}; Windows PowerShell 5.1 reads it in the ANSI code page "
+        "and a CJK code page cannot parse it. Use ASCII ('--' for an em-dash, "
+        "'-' for box drawing, a \\uXXXX escape in a string)."
+    )
+
+
+def test_ascii_gate_covers_the_update_handoff() -> None:
+    names = {p.relative_to(REPO_ROOT).as_posix() for p in SHIPPED_PS1_SCRIPTS}
+    assert {"scripts/install.ps1", "scripts/desktop-update/windows.ps1"} <= names
+
+
 def _powershell_host() -> str | None:
     for name in ("pwsh", "powershell"):
         found = shutil.which(name)
