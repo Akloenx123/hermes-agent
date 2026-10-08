@@ -83,12 +83,16 @@ def test_fetched_scripts_have_no_utf8_bom(script: Path) -> None:
 # update hand-off (scripts/desktop-update/windows.ps1) never started on
 # Chinese Windows (#134960). Pure ASCII decodes the same under every code
 # page, BOM or not. Recursive on purpose: the hand-off scripts live in a
-# subdirectory.
+# subdirectory. Skill and eval scripts are gated too: a skill installer
+# documented as `.\install.ps1` runs under 5.1 on a stock Windows host.
 SHIPPED_PS1_SCRIPTS = sorted(
     set(REPO_ROOT.glob("*.ps1"))
     | set(REPO_ROOT.glob("scripts/**/*.ps1"))
     | set(REPO_ROOT.glob("apps/desktop/scripts/*.ps1"))
     | set(REPO_ROOT.glob("tests/install/**/*.ps1"))
+    | set(REPO_ROOT.glob("skills/**/*.ps1"))
+    | set(REPO_ROOT.glob("optional-skills/**/*.ps1"))
+    | set(REPO_ROOT.glob("evals/**/*.ps1"))
 )
 
 
