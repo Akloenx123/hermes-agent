@@ -6,6 +6,7 @@ every offline sync that needed a missing entry failed closed with "requested dat
 in the cache".
 """
 
+import os
 import shutil
 
 import pytest
@@ -47,3 +48,40 @@ def test_partial_seed_is_retried_on_the_next_install(payload_cache, monkeypatch)
     packages.uv_cache_dir()
     assert (payload_cache / ".seeded").is_file()
     assert (payload_cache / "archive-v0" / "bucket" / "module.py").read_text(encoding="utf-8") == "seeded = True\n"
+
+
+def test_retry_finishes_a_seed_that_died_inside_a_directory(payload_cache, monkeypatch):
+    """A copy that already created ``archive-v0/`` left the retry nothing to do: it skipped the
+    existing top-level directory and recorded completion over the hole, so uv later failed with
+    "Missing .dist-info directory" for the bucket the copy never finished."""
+    dist_info = paths.store_root().parent / "uv-cache" / "archive-v0" / "bucket" / "pkg-1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text("Name: pkg\n", encoding="utf-8")
+    real_copytree = shutil.copytree
+    interrupted: list[str] = []
+
+    def dies_at_dist_info(src, dst, *args, **kwargs):
+        if os.fspath(src).endswith(".dist-info") and not interrupted:
+            interrupted.append(os.fspath(src))
+            raise OSError("copy interrupted")
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copytree", dies_at_dist_info)
+    packages.uv_cache_dir()
+    bucket = payload_cache / "archive-v0" / "bucket"
+    assert (bucket / "module.py").is_file() and not (bucket / "pkg-1.0.dist-info").exists()
+    assert not (payload_cache / ".seeded").is_file()
+
+    packages.uv_cache_dir()
+    assert (bucket / "pkg-1.0.dist-info" / "METADATA").read_text(encoding="utf-8") == "Name: pkg\n"
+    assert (payload_cache / ".seeded").is_file()
+
+
+def test_retry_recopies_a_file_the_interrupted_seed_left_short(payload_cache):
+    short = payload_cache / "archive-v0" / "bucket" / "module.py"
+    short.parent.mkdir(parents=True)
+    short.write_text("seed", encoding="utf-8")
+
+    packages.uv_cache_dir()
+    assert short.read_text(encoding="utf-8") == "seeded = True\n"
+    assert (payload_cache / ".seeded").is_file()
