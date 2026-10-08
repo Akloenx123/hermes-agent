@@ -46,3 +46,23 @@ assert Path('/opt/hermes/node_modules/typescript/bin/tsc').is_file()
         capture_output=True, text=True, timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_first_dependency_generation_keeps_the_image_extras(built_image: str) -> None:
+    # A writable PM generation replaces the image venv instead of layering on it, so
+    # its baseline is the shipped feature list. Without one, the first generation held
+    # only the extras requested at that moment: mcp and the messaging adapters were
+    # gone once it was selected (#135329).
+    probe = """
+from pm.features import read_features
+
+shipped = set(read_features() or ())
+baked = {'mcp', 'messaging', 'otlp', 'anthropic', 'bedrock', 'azure-identity', 'matrix', 'google-chat'}
+assert baked <= shipped, f'shipped feature list lacks {sorted(baked - shipped)}: {sorted(shipped)}'
+"""
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--user", "hermes",
+         "--entrypoint", "/opt/hermes/.venv/bin/python", built_image, "-c", probe],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

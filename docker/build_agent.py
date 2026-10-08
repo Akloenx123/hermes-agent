@@ -6,6 +6,7 @@ import sysconfig
 
 from scripts.build.agent import assemble
 from scripts.build.inputs import AgentInputs, RESOURCE_ENV
+from pm.features import installed_extras, write_features
 from pm.store import current_target
 
 
@@ -25,6 +26,9 @@ def assemble_image(root: Path) -> None:
         link = environment / "bin" / name
         link.unlink(missing_ok=True)
         link.symlink_to(f"../../{command}")
+    # PM's shipped baseline, as in a native bundle: the first writable generation
+    # keeps the image's extras instead of only the ones requested at that moment.
+    write_features(installed_extras(root, environment, python_exe=environment / "bin/python"), root)
 
 
 if __name__ == "__main__":
