@@ -3018,6 +3018,7 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
         except Exception as exc:
             if _sessions.get(sid) is not session:
                 return
+            logger.exception("resume of %s failed loading its transcript (session %s)", stored_id, sid)
             message = resume_failed_message(exc)
             session.update(resume_hydrating=False, resume_history_error=message, agent_error=message)
             session["resume_history_ready"].set()
